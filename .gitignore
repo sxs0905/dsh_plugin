@@ -47,3 +47,9 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 native/system/test/bin/
+
+# This repository's own plugin SHIPS its built bundle: `lib/` above is the DSH
+# monorepo's build-output rule, but `dsh-plugin-deepseek-balance/lib/*.js` is
+# hand-authored source that must be committed for the plugin to be installable
+# from a fresh clone. A later negation wins over the earlier directory rule.
+!dsh-plugin-deepseek-balance/lib/
