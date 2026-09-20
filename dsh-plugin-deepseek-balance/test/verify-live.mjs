@@ -100,6 +100,8 @@ if (entry !== undefined) {
     check("bundle mirrors the chat stats-strip classes", source.includes("dsb_dock") && source.includes("dsb_pill"));
     check("bundle measures the stats row to share its line", source.includes("data-composer-stats") && source.includes("--dsb-lift"));
     check("bundle renders an explicit refresh control", source.includes("dsb_refresh"));
+    check("bundle registers the settings card", source.includes("settings.plugin.item") && source.includes("settingsScope"));
+    check("bundle carries the settings dictionary", source.includes("settings.title") && source.includes("settings.description"));
   }
 }
 

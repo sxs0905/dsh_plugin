@@ -60,6 +60,7 @@ function makeCtx(overrides = {}) {
   const disposers = [];
   const effects = [];
   const resolveCalls = [];
+  const injectCalls = [];
   const hasCredentialOverride = Object.prototype.hasOwnProperty.call(overrides, "credential");
   const ctx = {
     credentials: {
@@ -88,8 +89,21 @@ function makeCtx(overrides = {}) {
       if (typeof dispose === "function") disposers.push(dispose);
     },
     logger: { info: () => {}, warn: () => {} },
+    /* Cordis hands an optional service consumer a derived context once the
+       service exists; the stub answers for the two seams this plugin uses:
+       `settings` (host) and `settingsScope` (browser). */
+    inject: (deps, callback) => {
+      const wanted = Array.isArray(deps) ? deps : [deps];
+      injectCalls.push(wanted);
+      if (wanted.includes("settings") && overrides.settings !== undefined) {
+        callback({ ...ctx, settings: overrides.settings });
+      }
+      if (wanted.includes("settingsScope") && overrides.settingsScope !== undefined) {
+        callback({ ...ctx, settingsScope: overrides.settingsScope });
+      }
+    },
   };
-  return { ctx, routes, disposers, effects, resolveCalls };
+  return { ctx, routes, disposers, effects, resolveCalls, injectCalls };
 }
 
 /**
@@ -613,6 +627,93 @@ async function startMutableUpstream(state) {
   await upstream.close();
 }
 
+//#region host half — settings section
+process.stdout.write("host half — settings section\n");
+const schemastery = (await import("@deepseek-ai/schemastery")).default;
+check("schemastery resolves for the settings card", typeof schemastery?.object === "function");
+{
+  const schema = plugin.buildSettingsSchema(schemastery);
+  const json = JSON.stringify(schema.toJSON());
+  check("settings schema carries every card field", ["apiKeyRef", "trackDailySpend", "cacheMs", "timeoutMs", "sampleMs"].every((field) => json.includes(field)), json.slice(0, 200));
+  check("settings schema defaults match the host defaults", json.includes("15000") && json.includes("10000") && json.includes("300000"), json.slice(0, 400));
+  const resolved = schema({ cacheMs: 1500, trackDailySpend: false });
+  check(
+    "settings schema resolves overrides over defaults",
+    resolved.cacheMs === 1500 && resolved.trackDailySpend === false && resolved.apiKeyRef === "DEEPSEEK_API_KEY",
+    JSON.stringify(resolved),
+  );
+}
+{
+  /* The section is attached only where a settings provider is composed; the
+     stub stands in for `ctx.settings`, so the wiring under test is ours. */
+  const sections = [];
+  const settings = {
+    installSection: (owner, ns, schema, entry, hooks) => {
+      sections.push({ owner, ns, schema, entry, hooks });
+      hooks.setSource(() => schema(entry));
+      hooks.onChange();
+    },
+  };
+  const upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(SUCCESS);
+  });
+  const ledgerPath = join(LEDGER_DIR, "settings-live.json");
+  const { ctx, routes } = makeCtx({ settings });
+  applyPlugin(ctx, { baseUrl: upstream.origin, cacheMs: 60_000, sampleMs: 0, ledgerPath });
+  /* `apply` imports schemastery before it registers, so settle that turn. */
+  for (let tick = 0; tick < 20 && sections.length === 0; tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check("registers one settings section", sections.length === 1, `got ${String(sections.length)}`);
+  const section = sections[0];
+  check("section namespace is the plugin namespace", section?.ns === "deepseek-balance", String(section?.ns));
+  check(
+    "section base mirrors the loader row",
+    section?.entry?.cacheMs === 60_000 && section?.entry?.sampleMs === 0 && section?.entry?.trackDailySpend === true,
+    JSON.stringify(section?.entry),
+  );
+  const resolveSection = (patch) => section.schema({ ...section.entry, ...patch });
+
+  const first = await callRoute(routes[0]);
+  const second = await callRoute(routes[0]);
+  check("a reading inside the cache window is reused", JSON.parse(first.body).cached === false && JSON.parse(second.body).cached === true);
+
+  /* A committed override re-applies live: cacheMs 0 must reach upstream again. */
+  section.hooks.setSource(() => resolveSection({ cacheMs: 0 }));
+  section.hooks.onChange();
+  const third = await callRoute(routes[0]);
+  check("a live commit drops the server cache", JSON.parse(third.body).cached === false, third.body.slice(0, 120));
+
+  /* Turning the daily-spend ledger off stops deriving it, without a restart. */
+  section.hooks.setSource(() => resolveSection({ cacheMs: 0, trackDailySpend: false }));
+  section.hooks.onChange();
+  const fourth = await callRoute(routes[0]);
+  check("a live commit stops deriving today's spend", JSON.parse(fourth.body).spentToday === undefined, fourth.body.slice(0, 160));
+
+  /* Detaching restores the composition layer: the loader row's cache window. */
+  section.hooks.setSource(() => section.entry);
+  section.hooks.onChange();
+  await callRoute(routes[0]);
+  const sixth = await callRoute(routes[0]);
+  check("detaching restores the loader row's cache window", JSON.parse(sixth.body).cached === true, sixth.body.slice(0, 120));
+  await upstream.close();
+}
+{
+  /* A deployment with no settings provider keeps the plugin exactly as it was. */
+  const upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(SUCCESS);
+  });
+  const { ctx, routes, injectCalls } = makeCtx();
+  applyPlugin(ctx, { baseUrl: upstream.origin, cacheMs: 0, sampleMs: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  check("the settings seam is attempted once", injectCalls.filter((deps) => deps.includes("settings")).length === 1, JSON.stringify(injectCalls));
+  const result = await callRoute(routes[0]);
+  check("the balance route still answers without settings", result.status === 200, `HTTP ${String(result.status)}`);
+  await upstream.close();
+}
+
 //#region client half
 process.stdout.write("client half — bundle contract\n");
 const realFetch = globalThis.fetch;
@@ -628,31 +729,42 @@ const realClearInterval = globalThis.clearInterval;
 
   /* Minimal React hook runtime: cells persist across explicit re-renders, so a
      component that fetches from its effect can be rendered to a settled tree.
-     Effects run synchronously and their cleanups are ignored. */
-  const hookCells = [];
-  let hookCursor = 0;
+     Effects run synchronously and their cleanups are ignored.
+     `cells` is swappable (`resetHooks`) so a test can give a component its own
+     instance; setters capture the array they were created on, so a component's
+     late async settlement can never land in another component's cells. */
+  const hookRuntime = { cells: [], cursor: 0 };
   const reactStub = {
     createElement: (type, props, ...children) => ({ type, props, children: children.flat() }),
     useState: (initial) => {
-      const index = hookCursor;
-      hookCursor += 1;
-      if (!(index in hookCells)) hookCells[index] = initial;
-      return [hookCells[index], (value) => {
-        hookCells[index] = typeof value === "function" ? value(hookCells[index]) : value;
+      const cells = hookRuntime.cells;
+      const index = hookRuntime.cursor;
+      hookRuntime.cursor += 1;
+      /* React invokes a function initializer once, on the first render. */
+      if (!(index in cells)) cells[index] = typeof initial === "function" ? initial() : initial;
+      return [cells[index], (value) => {
+        cells[index] = typeof value === "function" ? value(cells[index]) : value;
       }];
     },
     useRef: (initial) => {
-      const index = hookCursor;
-      hookCursor += 1;
-      if (!(index in hookCells)) hookCells[index] = { current: initial };
-      return hookCells[index];
+      const cells = hookRuntime.cells;
+      const index = hookRuntime.cursor;
+      hookRuntime.cursor += 1;
+      if (!(index in cells)) cells[index] = { current: initial };
+      return cells[index];
     },
     useEffect: (callback) => { callback(); },
     useCallback: (callback) => callback,
   };
   const render = (Component, props) => {
-    hookCursor = 0;
+    hookRuntime.cursor = 0;
     return Component(props);
+  };
+  /** Give the next rendered component a fresh hook-cell array. */
+  const resetHooks = () => {
+    hookRuntime.cells = [];
+    hookRuntime.cursor = 0;
+    return hookRuntime.cells;
   };
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -758,7 +870,47 @@ const realClearInterval = globalThis.clearInterval;
       "measureSide falls back without measurable children",
       exportsObject.measureSide({ getBoundingClientRect: () => ({ left: 0, right: 1000 }) }, scope) === "none",
     );
+    /* The stats box is a FULL-WIDTH, content-centred flex container, so its own
+       rect spans the whole band however short the text is; measuring that rect
+       reports "no room on either side" forever, which is what left the row
+       overlaid on the stats text. The pills are its children: their union is
+       the part this row must stay clear of. */
+    const containerNode = {
+      getBoundingClientRect: () => ({ left: 0, right: 1000 }),
+      children: [
+        { getBoundingClientRect: () => ({ left: 300, right: 450 }) },
+        { getBoundingClientRect: () => ({ left: 462, right: 600 }) },
+      ],
+    };
+    check(
+      "measureSide measures the stats pills, not their full-width box",
+      exportsObject.measureSide(rootNode, { ...scope, document: { querySelector: () => containerNode } }) === "right",
+      String(exportsObject.measureSide(rootNode, { ...scope, document: { querySelector: () => containerNode } })),
+    );
+    const fullBandNode = {
+      getBoundingClientRect: () => ({ left: 0, right: 1000 }),
+      children: [
+        { getBoundingClientRect: () => ({ left: 10, right: 500 }) },
+        { getBoundingClientRect: () => ({ left: 512, right: 990 }) },
+      ],
+    };
+    check(
+      "a stats row filling the band still falls back to its own line",
+      exportsObject.measureSide(rootNode, { ...scope, document: { querySelector: () => fullBandNode } }) === "none",
+      String(exportsObject.measureSide(rootNode, { ...scope, document: { querySelector: () => fullBandNode } })),
+    );
+    check(
+      "childExtent falls back to null without measurable children",
+      exportsObject.childExtent({ getBoundingClientRect: () => ({ left: 0, right: 1000 }) }) === null,
+    );
   }
+  /* Overlaying takes BOTH a lift and a side with room. A lift alone drops the
+     row onto the centred stats text, which is exactly the reported overlap. */
+  check("exports shouldOverlay", typeof exportsObject.shouldOverlay === "function");
+  check("a lift plus a chosen side overlays", exportsObject.shouldOverlay(20, "right") === true && exportsObject.shouldOverlay(20, "left") === true);
+  check("no side means no overlay", exportsObject.shouldOverlay(20, "none") === false);
+  check("no lift means no overlay", exportsObject.shouldOverlay(0, "right") === false);
+  check("unmeasurable lift means no overlay", exportsObject.shouldOverlay(Number.NaN, "right") === false);
 
   {
     /* Re-measuring must not compound: the row is already shifted by the lift in
@@ -986,6 +1138,196 @@ const realClearInterval = globalThis.clearInterval;
   check("legacy single-account payload still renders one pill", legacyChildren.filter((child) => child?.type === "span" && child?.props?.className === "dsb_pill").length === 1);
   check("legacy payload shows its amount", JSON.stringify(legacyChildren).includes("¥28.28"));
   check("legacy payload renders no separator", legacyChildren.filter((child) => child?.props?.className === "dsb_sep").length === 0);
+
+  /* Settings -> Plugins card: keyed by the settings namespace so the tab pairs
+     it with the host section, and staged so a save is the only write. */
+  const balanceSettings = { apiKeyRef: "DEEPSEEK_API_KEY", trackDailySpend: true, cacheMs: 15000, timeoutMs: 10000, sampleMs: 300000 };
+  const scopeOf = (overrides = {}) => {
+    const writes = [];
+    let snapshot = {
+      status: "ready",
+      value: balanceSettings,
+      base: balanceSettings,
+      user: undefined,
+      revision: 4,
+      writable: true,
+      mode: "host",
+      ...overrides,
+    };
+    const listeners = new Set();
+    return {
+      writes,
+      set: (field, value) => {
+        writes.push({ op: "set", field, value });
+        snapshot = { ...snapshot, value: { ...snapshot.value, [field]: value }, user: { ...(snapshot.user ?? {}), [field]: value } };
+        for (const listener of listeners) listener();
+        return Promise.resolve();
+      },
+      unset: (field) => {
+        writes.push({ op: "unset", field });
+        return Promise.resolve();
+      },
+      getSnapshot: () => snapshot,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+  };
+  /** Depth-first search for the first node whose props satisfy a predicate. */
+  const findNode = (node, predicate) => {
+    if (node === null || typeof node !== "object") return undefined;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const hit = findNode(child, predicate);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    }
+    if (predicate(node)) return node;
+    return findNode(node.children, predicate);
+  };
+  const byClass = (root, className) => findNode(root, (node) => node?.props?.className === className);
+  const byId = (root, id) => findNode(root, (node) => node?.props?.id === id);
+
+  check("settings card is exported", typeof exportsObject.BalanceSettingsCard === "function");
+  check("settings field specs are exported", Array.isArray(exportsObject.SETTINGS_FIELDS) && exportsObject.SETTINGS_FIELDS.length === 5);
+  {
+    const spec = exportsObject.SETTINGS_FIELDS.find((candidate) => candidate.field === "cacheMs");
+    const snapshot = { value: balanceSettings, base: balanceSettings, user: undefined };
+    const untouched = exportsObject.settingsFieldState(spec, snapshot, undefined);
+    check("an untouched field shows the resolved value", untouched.text === "15000" && untouched.overridden === false && untouched.invalid === false, JSON.stringify(untouched));
+    check(
+      "a field present in the user layer reads as overridden",
+      exportsObject.settingsFieldState(spec, { ...snapshot, user: { cacheMs: 15000 } }, undefined).overridden === true,
+    );
+    const invalid = exportsObject.settingsFieldState(spec, snapshot, { text: "abc" });
+    check("a non-numeric draft is invalid and writes nothing", invalid.invalid === true && invalid.write === undefined, JSON.stringify(invalid));
+    const belowMin = exportsObject.settingsFieldState(spec, snapshot, { text: "-1" });
+    check("a draft below the minimum is invalid", belowMin.invalid === true && belowMin.invalidLabel === "settings.invalidRange", JSON.stringify(belowMin));
+    const valid = exportsObject.settingsFieldState(spec, snapshot, { text: "0" });
+    check("a numeric draft plans a number write", valid.write?.kind === "set" && valid.write.value === 0, JSON.stringify(valid));
+    const emptied = exportsObject.settingsFieldState(spec, snapshot, { text: "  " });
+    check("an emptied control plans a clear", emptied.write?.kind === "clear" && emptied.overridden === false, JSON.stringify(emptied));
+    const cleared = exportsObject.settingsFieldState(spec, snapshot, { clear: true });
+    check("a reset shows the composition value again", cleared.text === "15000" && cleared.overridden === false && cleared.write?.kind === "clear", JSON.stringify(cleared));
+    const toggle = exportsObject.SETTINGS_FIELDS.find((candidate) => candidate.field === "trackDailySpend");
+    const off = exportsObject.settingsFieldState(toggle, snapshot, { value: false });
+    check("a toggled checkbox plans a boolean write", off.checked === false && off.write?.value === false, JSON.stringify(off));
+  }
+
+  const card = exportsObject.BalanceSettingsCard;
+  /* Each scope's card is its own instance, like a fiber in a real tree. */
+
+  const scope = scopeOf();
+  const cardProps = { t: translate, scope };
+  resetHooks();
+  let cardTree = render(card, cardProps);
+  check("settings card is a list item", cardTree?.type === "li" && cardTree?.props?.className === "dsb_cfg", String(cardTree?.props?.className));
+  check("settings card names the plugin in Chinese", JSON.stringify(cardTree).includes("[settings.title]"), JSON.stringify(cardTree).slice(0, 200));
+  check("settings card describes itself", JSON.stringify(cardTree).includes("[settings.description]"));
+  check("collapsed card hides its fields", byId(cardTree, "dsb-setting-cacheMs") === undefined);
+
+  /** Render the card, opening it when a save collapsed it. */
+  const openCard = (props = cardProps) => {
+    let tree = render(card, props);
+    if (tree !== null && byId(tree, "dsb-setting-cacheMs") === undefined) {
+      byClass(tree, "dsb_cfgHead")?.props?.onClick();
+      tree = render(card, props);
+    }
+    return tree;
+  };
+  cardTree = openCard();
+  check("expanding discloses every field", exportsObject.SETTINGS_FIELDS.every((spec) => byId(cardTree, "dsb-setting-" + spec.field) !== undefined));
+  const saveButton = () => byClass(render(card, cardProps), "dsb_cfgSave");
+  const discardButton = () => byClass(render(card, cardProps), "dsb_cfgDiscard");
+  check("save is blocked with nothing staged", saveButton()?.props?.disabled === true);
+  check("discard is blocked with nothing staged", discardButton()?.props?.disabled === true);
+
+  byId(cardTree, "dsb-setting-apiKeyRef")?.props?.onChange({ target: { value: "MY_KEY" } });
+  cardTree = render(card, cardProps);
+  check("a staged edit marks the card unsaved", byClass(cardTree, "dsb_cfgPending") !== undefined);
+  check("retyping is not a write", scope.writes.length === 0);
+  check("save is enabled by a staged edit", saveButton()?.props?.disabled === false);
+  saveButton()?.props?.onClick();
+  await settle();
+  check("save writes the staged field", scope.writes.length === 1 && scope.writes[0].field === "apiKeyRef" && scope.writes[0].value === "MY_KEY", JSON.stringify(scope.writes));
+  cardTree = render(card, cardProps);
+  check("a saved card clears its staged edits", byClass(cardTree, "dsb_cfgPending") === undefined);
+  check("a saved card collapses again", byId(cardTree, "dsb-setting-cacheMs") === undefined);
+
+  cardTree = openCard();
+  byId(cardTree, "dsb-setting-cacheMs")?.props?.onChange({ target: { value: "abc" } });
+  cardTree = render(card, cardProps);
+  check("an invalid draft blocks the save", saveButton()?.props?.disabled === true);
+  check("an invalid draft explains itself", JSON.stringify(cardTree).includes("[settings.invalidNumber]"));
+  byId(cardTree, "dsb-setting-cacheMs")?.props?.onChange({ target: { value: "30000" } });
+  cardTree = render(card, cardProps);
+  saveButton()?.props?.onClick();
+  await settle();
+  check("a numeric draft is written as a number", scope.writes.at(-1)?.field === "cacheMs" && scope.writes.at(-1)?.value === 30000, JSON.stringify(scope.writes));
+  cardTree = openCard();
+  byId(cardTree, "dsb-setting-trackDailySpend")?.props?.onChange({ target: { checked: false } });
+  cardTree = render(card, cardProps);
+  saveButton()?.props?.onClick();
+  await settle();
+  check("the toggle writes a boolean", scope.writes.at(-1)?.field === "trackDailySpend" && scope.writes.at(-1)?.value === false, JSON.stringify(scope.writes));
+  cardTree = openCard();
+  byId(cardTree, "dsb-setting-apiKeyRef")?.props?.onChange({ target: { value: "OTHER" } });
+  cardTree = render(card, cardProps);
+  discardButton()?.props?.onClick();
+  cardTree = render(card, cardProps);
+  check("discard drops staged edits", byClass(cardTree, "dsb_cfgPending") === undefined);
+  check("discard writes nothing", scope.writes.length === 3, JSON.stringify(scope.writes));
+
+  /* A field the user already overrode offers its reset. */
+  const overriddenScope = scopeOf({ user: { cacheMs: 30000 }, value: { ...balanceSettings, cacheMs: 30000 } });
+  const overriddenProps = { t: translate, scope: overriddenScope };
+  resetHooks();
+  const overriddenTree = openCard(overriddenProps);
+  check("an overridden field is badged", JSON.stringify(overriddenTree).includes("[settings.overridden]"));
+  findNode(overriddenTree, (node) => node?.props?.className === "dsb_cfgReset")?.props?.onClick();
+  const resetTree = render(card, overriddenProps);
+  byClass(resetTree, "dsb_cfgSave")?.props?.onClick();
+  await settle();
+  check("resetting a field stages a clear", overriddenScope.writes.length === 1 && overriddenScope.writes[0].op === "unset" && overriddenScope.writes[0].field === "cacheMs", JSON.stringify(overriddenScope.writes));
+
+  /* A read-only document, and an unavailable namespace. */
+  const readOnlyScope = scopeOf({ writable: false });
+  resetHooks();
+  const readOnlyTree = openCard({ t: translate, scope: readOnlyScope });
+  check("a read-only document says so", JSON.stringify(readOnlyTree).includes("[settings.readOnly]"));
+  check("a read-only document blocks the save", byId(readOnlyTree, "dsb-setting-cacheMs")?.props?.disabled === true);
+  resetHooks();
+  check("an unserved namespace renders no card", render(card, { t: translate, scope: scopeOf({ status: "unavailable" }) }) === null);
+
+  /* The card registers under the namespace key, with this plugin's dictionary. */
+  {
+    const registrations = [];
+    const settingsCtx = {
+      slots: {
+        inject: (name, callback) => { callback(); },
+        register: (definition, component) => { registrations.push([definition, component]); },
+      },
+    };
+    const fakeCtx = {
+      effect: (callback) => { callback(); },
+      locale: { register: () => {} },
+      slots: settingsCtx.slots,
+      inject: (deps, callback) => {
+        if (Array.isArray(deps) && deps.includes("settingsScope")) {
+          callback({ ...fakeCtx, settingsScope: { bind: (spec) => ({ spec }) } });
+        }
+      },
+    };
+    exportsObject.apply(fakeCtx);
+    const registered = registrations.find(([definition]) => definition.name === "settings.plugin.item");
+    check("apply registers the settings card", registered !== undefined, JSON.stringify(registrations.map(([definition]) => definition.name)));
+    check("the card is keyed by the settings namespace", registered?.[0]?.key === "deepseek-balance", String(registered?.[0]?.key));
+    check("the card binds this plugin's dictionary", registered?.[0]?.locale === "deepseek-balance", String(registered?.[0]?.locale));
+    const face = registered?.[0]?.inject?.();
+    check("the card injects its bound scope", face?.scope?.spec?.namespace === "deepseek-balance", JSON.stringify(face?.scope));
+  }
 
   delete globalThis.document;
   delete globalThis.window;
