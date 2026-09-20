@@ -1,0 +1,42 @@
+{
+  "name": "dsh-plugin-deepseek-balance",
+  "version": "1.1.3",
+  "private": true,
+  "description": "DSH plugin: live DeepSeek balance (one row per API key) plus today's derived spend, in the web GUI composer dock and sidebar, with a local HTTP endpoint.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "README.md",
+    "docs/"
+  ],
+  "scripts": {
+    "test": "node test/run-tests.mjs && node test/install-patch.test.mjs",
+    "test:live": "node test/run-tests.mjs --live",
+    "verify": "node test/verify-live.mjs",
+    "pack": "npm pack"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
