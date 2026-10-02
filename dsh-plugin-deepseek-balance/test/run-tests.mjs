@@ -933,6 +933,54 @@ const realClearInterval = globalThis.clearInterval;
   check("no side means no overlay", exportsObject.shouldOverlay(20, "none") === false);
   check("no lift means no overlay", exportsObject.shouldOverlay(0, "right") === false);
   check("unmeasurable lift means no overlay", exportsObject.shouldOverlay(Number.NaN, "right") === false);
+  /* The 0.2.x skeleton puts the stats pills, this row, and the context meter in
+     ONE flex row; claiming the whole band there squeezes the stats into
+     ellipses, so the dock has to be recognised and rendered as a plain item. */
+  check("exports measureDockLayout", typeof exportsObject.measureDockLayout === "function");
+  {
+    const statsNode = { parentElement: null };
+    const statsHolder = { display: "contents", parentElement: null };
+    statsNode.parentElement = statsHolder;
+    const dockRow = { parentElement: null };
+    const rowHolder = { display: "contents", parentElement: null };
+    dockRow.parentElement = rowHolder;
+    const winRow = { getComputedStyle: (node) => (node === dockRow || node === statsNode ? { display: "flex" } : { display: node.display, flexDirection: "row" }) };
+    rowHolder.parentElement = { display: "flex", flexDirection: "row", parentElement: null };
+    statsHolder.parentElement = rowHolder.parentElement;
+    const inlineScope = { window: winRow, document: { querySelector: () => statsNode } };
+    check("a one-row dock is recognised", exportsObject.measureDockLayout(dockRow, inlineScope) === "inline", String(exportsObject.measureDockLayout(dockRow, inlineScope)));
+    const winColumn = { getComputedStyle: () => ({ display: "flex", flexDirection: "column" }) };
+    check(
+      "a stacking dock keeps the lift path",
+      exportsObject.measureDockLayout(dockRow, { ...inlineScope, window: winColumn }) === "stacked",
+      String(exportsObject.measureDockLayout(dockRow, { ...inlineScope, window: winColumn })),
+    );
+    const winBlock = { getComputedStyle: () => ({ display: "block" }) };
+    check("a block dock keeps the lift path", exportsObject.measureDockLayout(dockRow, { ...inlineScope, window: winBlock }) === "stacked");
+    const otherStats = { parentElement: { display: "flex", flexDirection: "row", parentElement: null } };
+    check(
+      "stats outside that row keep the lift path",
+      exportsObject.measureDockLayout(dockRow, { ...inlineScope, document: { querySelector: () => otherStats } }) === "stacked",
+    );
+    check("no stats row keeps the lift path", exportsObject.measureDockLayout(dockRow, { ...inlineScope, document: { querySelector: () => null } }) === "stacked");
+    check("no computed style keeps the lift path", exportsObject.measureDockLayout(dockRow, { ...inlineScope, window: {} }) === "stacked");
+    check("an unmeasurable row keeps the lift path", exportsObject.measureDockLayout(null, inlineScope) === "stacked");
+  }
+  check("exports grantedValueOf", typeof exportsObject.grantedValueOf === "function");
+  {
+    const withGrant = { ok: true, primary: { currency: "CNY", total: "95.41", granted: "3.82", toppedUp: "91.59" } };
+    const withoutGrant = { ok: true, primary: { currency: "CNY", total: "20.00", granted: "0.00", toppedUp: "20.00" } };
+    check("a grant renders with its symbol", exportsObject.grantedValueOf(withGrant) === "¥3.82", String(exportsObject.grantedValueOf(withGrant)));
+    check("a zero grant renders nothing", exportsObject.grantedValueOf(withoutGrant) === null);
+    check("a missing grant renders nothing", exportsObject.grantedValueOf({ ok: true, primary: { currency: "CNY", total: "1.00" } }) === null);
+    check("a failed reading renders nothing", exportsObject.grantedValueOf({ ok: false }) === null);
+    check("an absent reading renders nothing", exportsObject.grantedValueOf(null) === null && exportsObject.grantedValueOf(undefined) === null);
+    check(
+      "a non-primary balance still supplies the grant",
+      exportsObject.grantedValueOf({ ok: true, primary: null, balances: [{ currency: "USD", total: "5.00", granted: "1.25" }] }) === "$1.25",
+    );
+    check("an unparseable grant renders nothing", exportsObject.grantedValueOf({ ok: true, primary: { currency: "CNY", granted: "n/a" } }) === null);
+  }
 
   {
     /* Re-measuring must not compound: the row is already shifted by the lift in
@@ -1076,6 +1124,7 @@ const realClearInterval = globalThis.clearInterval;
   check("dock row declares its lift for the one-line layout", dockTree?.props?.["data-lifted"] === "true" || dockTree?.props?.["data-lifted"] === "false", String(dockTree?.props?.["data-lifted"]));
   check("dock row exposes the lift as a custom property", typeof dockTree?.props?.style?.["--dsb-lift"] === "string", JSON.stringify(dockTree?.props?.style));
   check("dock row declares which side it takes", ["left", "right", "none"].includes(String(dockTree?.props?.["data-side"])), String(dockTree?.props?.["data-side"]));
+  check("dock row declares its dock layout", ["inline", "stacked"].includes(String(dockTree?.props?.["data-layout"])), String(dockTree?.props?.["data-layout"]));
   check("dock row is right-aligned beside the stats", String(dockTree?.props?.className).includes("dsb_dock"));
   const dockChildren = dockTree?.children ?? [];
   const accountPills = dockChildren.filter((child) => child?.type === "span" && child?.props?.className === "dsb_pill");
@@ -1160,6 +1209,31 @@ const realClearInterval = globalThis.clearInterval;
   check("legacy single-account payload still renders one pill", legacyChildren.filter((child) => child?.type === "span" && child?.props?.className === "dsb_pill").length === 1);
   check("legacy payload shows its amount", JSON.stringify(legacyChildren).includes("¥28.28"));
   check("legacy payload renders no separator", legacyChildren.filter((child) => child?.props?.className === "dsb_sep").length === 0);
+
+  /* 赠送余额: the second balance the platform shows, beside the headline total. */
+  const grantedBalance = (currency, total, granted) => ({ currency, total, granted, toppedUp: total });
+  stubPayload = payloadOf([{
+    ...account("account-1", "", "95.41"),
+    primary: grantedBalance("CNY", "95.41", "3.82"),
+    balances: [grantedBalance("CNY", "95.41", "3.82")],
+  }]);
+  render(dock, { t: translate, variant: "dock" });
+  await settle();
+  const grantTree = render(dock, { t: translate, variant: "dock" });
+  const grantText = JSON.stringify(grantTree?.children);
+  check("dock shows the granted balance beside the total", grantText.includes("dsb_grant") && grantText.includes("¥3.82"), grantText);
+  check("the granted balance is labelled", grantText.includes("[field.granted]"), grantText);
+  render(footer, { wide: true, t: translate, variant: "footer" });
+  await settle();
+  const grantFooter = render(footer, { wide: true, t: translate, variant: "footer" });
+  const grantFooterText = JSON.stringify(grantFooter?.children);
+  check("the sidebar chip shows the granted balance too", grantFooterText.includes("dsb_grant") && grantFooterText.includes("¥3.82"), grantFooterText);
+  /* A reading without a grant keeps the row exactly as it was. */
+  stubPayload = payloadOf([account("account-1", "", "32.30")]);
+  render(dock, { t: translate, variant: "dock" });
+  await settle();
+  const noGrantTree = render(dock, { t: translate, variant: "dock" });
+  check("a zero grant adds nothing to the dock row", !JSON.stringify(noGrantTree?.children).includes("dsb_grant"));
 
   /* Settings -> Plugins card: keyed by the settings namespace so the tab pairs
      it with the host section, and staged so a save is the only write. */

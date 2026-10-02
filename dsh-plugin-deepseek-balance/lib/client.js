@@ -46,6 +46,13 @@ window.__ModuleLoader__.load({
       '.dsb_dock[data-side="right"]{justify-content:flex-end}',
       '.dsb_dock[data-side="left"]{justify-content:flex-start}',
       '.dsb_dock[data-side="none"]{justify-content:center}',
+      /* Composer docks that lay their registrants out in ONE flex row (the
+         0.2.x skeleton: stats pills, this row, then the context meter, all
+         centred with a gap) already put this row on the stats line. Claiming
+         the full band there would squeeze the stats pills into ellipses and
+         shove the context meter aside, so the row becomes an ordinary,
+         shrinkable flex item instead. */
+      '.dsb_dock[data-layout="inline"]{width:auto;max-width:none;margin:0;padding:0;height:auto;min-width:0;flex:0 1 auto;position:static;justify-content:flex-end}',
       ".dsb_pill{box-sizing:border-box;max-width:100%;color:var(--dsw-alias-label-tertiary);font:inherit;font-variant-numeric:tabular-nums;line-height:inherit;white-space:nowrap;background:0 0;border:none;border-radius:24px;align-items:center;gap:6px;padding:1px 8px;display:inline-flex;min-width:0}",
       ".dsb_pill svg{flex:none;width:14px;height:14px}",
       "button.dsb_pill{cursor:pointer}",
@@ -61,6 +68,10 @@ window.__ModuleLoader__.load({
       '.dsb_dot[data-tone="warn"]{background:var(--dsw-alias-state-warn-primary,#e8a33d)}',
       '.dsb_dot[data-tone="error"]{background:var(--dsw-alias-state-error-primary,#e03131)}',
       ".dsb_spend{flex:none;color:var(--dsw-alias-label-tertiary,#9a9a9a);font-variant-numeric:tabular-nums;font-weight:500}",
+      /* 赠送余额: the platform's second balance card. Tertiary like the spend
+         marker so it reads as a qualifier of the headline total, and clipping
+         (rather than wrapping) keeps the one-row dock stable when it is tight. */
+      ".dsb_grant{flex:0 1 auto;min-width:0;color:var(--dsw-alias-label-tertiary,#9a9a9a);font-variant-numeric:tabular-nums;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
       ".dsb_icon{display:block}",
       ".dsb_busy .dsb_icon{animation:dsb-rotate .8s linear infinite}",
       "@keyframes dsb-rotate{to{transform:rotate(360deg)}}",
@@ -263,6 +274,23 @@ window.__ModuleLoader__.load({
     function accountValue(account) {
       if (account.ok !== true || account.primary === null || account.primary === undefined) return "—";
       return formatAmount(account.primary.currency, account.primary.total);
+    }
+    /**
+     * The granted ("赠送余额") part of one account's reading, as a display
+     * string, or null when the account has no grant to show.
+     *
+     * The platform splits a balance into 充值余额 and 赠送余额; the headline
+     * amount is their total, so this is the second figure the console shows.
+     * @param account - one reading from the host payload.
+     * @returns a formatted amount such as `¥3.82`, or null.
+     */
+    function grantedValueOf(account) {
+      if (account === null || account === undefined || account.ok !== true) return null;
+      const balance = account.primary ?? (Array.isArray(account.balances) ? account.balances[0] : null);
+      if (balance === null || balance === undefined) return null;
+      const cents = Math.round(Number.parseFloat(balance.granted) * 100);
+      if (!Number.isFinite(cents) || cents <= 0) return null;
+      return formatAmount(balance.currency, balance.granted);
     }
     /**
      * The name to show for one account: its label, else the key reference for
@@ -522,6 +550,39 @@ window.__ModuleLoader__.load({
       return Number.isFinite(lift) && lift > 0;
     }
     /**
+     * How the composer dock lays this row out relative to the stats row.
+     *
+     * `"inline"` means both rows are children of ONE flex row (the 0.2.x
+     * skeleton: stats pills, this row, then the context meter). There the two
+     * already share a line, so this row must behave like any other item in that
+     * row — content-sized and shrinkable — instead of claiming the whole band
+     * and squeezing the stats into ellipses.
+     *
+     * `"stacked"` is the older skeleton, where the slot stacks registrants
+     * vertically and this row has to lift itself onto the stats line.
+     * @param root - this row's element, or null.
+     * @param scope - optional `{ window, document }` overrides for tests.
+     * @returns `"inline"` or `"stacked"`.
+     */
+    function measureDockLayout(root, scope) {
+      if (root === null || root === undefined) return "stacked";
+      const win = scope?.window ?? (typeof window === "undefined" ? undefined : window);
+      const doc = scope?.document ?? (typeof document === "undefined" ? undefined : document);
+      if (doc === undefined || typeof doc.querySelector !== "function") return "stacked";
+      if (win === undefined || typeof win.getComputedStyle !== "function") return "stacked";
+      const parent = layoutAncestorOf(root, win);
+      if (parent === null) return "stacked";
+      const style = win.getComputedStyle(parent);
+      const display = style?.display;
+      if (display !== "flex" && display !== "inline-flex") return "stacked";
+      if ((style?.flexDirection ?? "").startsWith("row") === false) return "stacked";
+      /* Only a stats row that shares that same flex row proves the two are
+         already side by side; anything else keeps the historical behaviour. */
+      const stats = doc.querySelector(STATS_SELECTOR);
+      if (stats === null || stats === undefined) return "stacked";
+      return layoutAncestorOf(stats, win) === parent ? "inline" : "stacked";
+    }
+    /**
      * The nearest ancestor that actually generates a box. The slot system wraps
      * every registrant in `display: contents` holders, so this row's own parent
      * is usually NOT the layout parent whose subtree gains the stats row.
@@ -672,18 +733,20 @@ window.__ModuleLoader__.load({
 
     //#region reading
     /**
-     * The dock row's element plus its current lift onto the chat stats line.
+     * The dock row's element, its current lift onto the chat stats line, the
+     * side it takes there, and how the dock lays the two rows out.
      *
      * The lift cannot be measured once: see {@link followLift} for everything
      * that moves the gap. This hook keeps the measurement alive for the whole
      * mount and re-runs it after every render, so a row that mounted before the
      * stats row existed still lands on the line once it appears.
-     * @returns `[ref, lift]`.
+     * @returns `[ref, lift, side, layout]`.
      */
     function useDockLift() {
       const rootRef = react.useRef(null);
       const [lift, setLift] = react.useState(0);
       const [side, setSide] = react.useState("none");
+      const [layout, setLayout] = react.useState("stacked");
       const watcher = react.useRef(null);
       /* Prefer a layout effect, so the row is placed before the first paint;
          fall back to a plain effect when the runtime has only that. */
@@ -695,6 +758,10 @@ window.__ModuleLoader__.load({
              stats row, so the horizontal check rides the same trigger set. */
           setSide((previous) => {
             const measured = measureSide(rootRef.current);
+            return previous === measured ? previous : measured;
+          });
+          setLayout((previous) => {
+            const measured = measureDockLayout(rootRef.current);
             return previous === measured ? previous : measured;
           });
         });
@@ -709,7 +776,7 @@ window.__ModuleLoader__.load({
            real reading, a spend marker appearing), which moves the gap. */
         watcher.current?.schedule();
       });
-      return [rootRef, lift, side];
+      return [rootRef, lift, side, layout];
     }
     /**
      * One shared balance reading: initial fetch, interval poll,
@@ -1175,8 +1242,10 @@ window.__ModuleLoader__.load({
     function DockBalance(props) {
       const t = typeof props.t === "function" ? props.t : (key) => key;
       const { payload, error, busy, refresh } = useBalance();
-      const [rootRef, lift, side] = useDockLift();
-      const overlaid = shouldOverlay(lift, side);
+      const [rootRef, lift, side, layout] = useDockLift();
+      /* In a one-row dock the stats row already sits beside this one, so the
+         lift/side machinery is out of the picture entirely. */
+      const overlaid = layout !== "inline" && shouldOverlay(lift, side);
       const accounts = payload === null ? [] : (payload.accounts ?? []);
       const multiple = accounts.length > 1;
 
@@ -1195,12 +1264,20 @@ window.__ModuleLoader__.load({
             children.push(react.createElement("span", { className: "dsb_sep", "aria-hidden": true, key: `sep-${account.id}` }, "·"));
           }
           const name = accountName(account, t, multiple, overlaid);
+          const granted = grantedValueOf(account);
           children.push(react.createElement(
             "span",
             { className: "dsb_pill", key: account.id },
             toneDot(accountTone(account)),
             name.length === 0 ? null : react.createElement("span", { className: "dsb_n" }, name),
             react.createElement("span", { className: "dsb_v" }, accountValue(account)),
+            granted === null
+              ? null
+              : react.createElement(
+                "span",
+                { className: "dsb_grant", key: "grant", title: t("field.granted") + " " + granted },
+                t("field.granted") + " " + granted,
+              ),
             spentTodayOf(account) === null
               ? null
               : react.createElement(
@@ -1231,6 +1308,7 @@ window.__ModuleLoader__.load({
           ref: rootRef,
           "data-lifted": overlaid ? "true" : "false",
           "data-side": side,
+          "data-layout": layout,
           style: { "--dsb-lift": String(lift) + "px" },
           "data-tone": error !== null ? "error" : "ok",
           title: tooltipOf(payload, error, t),
@@ -1254,6 +1332,7 @@ window.__ModuleLoader__.load({
       const extra = accounts.length > 1 ? accounts.length - 1 : 0;
       const tone = shown === null ? (error !== null ? "error" : "idle") : accountTone(shown);
       const value = shown === null ? (error !== null ? "—" : "…") : accountValue(shown);
+      const granted = grantedValueOf(shown);
       const tooltip = tooltipOf(payload, error, t);
 
       if (compact === true) {
@@ -1282,6 +1361,13 @@ window.__ModuleLoader__.load({
         toneDot(tone),
         react.createElement("span", { className: "dsb_label" }, busy === true && shown === null ? t("chip.busy") : t("chip.label")),
         react.createElement("span", { className: "dsb_value" }, value),
+        granted === null
+          ? null
+          : react.createElement(
+            "span",
+            { className: "dsb_grant", title: t("field.granted") + " " + granted },
+            t("field.granted") + " " + granted,
+          ),
         spentTodayOf(shown) === null
           ? null
           : react.createElement(
@@ -1361,6 +1447,8 @@ window.__ModuleLoader__.load({
     exports.measureSide = measureSide;
     exports.childExtent = childExtent;
     exports.shouldOverlay = shouldOverlay;
+    exports.measureDockLayout = measureDockLayout;
+    exports.grantedValueOf = grantedValueOf;
     exports.followLift = followLift;
     exports.layoutAncestorOf = layoutAncestorOf;
     exports.apply = apply;

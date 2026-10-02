@@ -7,9 +7,9 @@
 ```
 ① 输入框上方统计栏 —— 与「3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%」
    同一行的空侧，不换行（右侧优先，右侧不够就用左侧）：
-   3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%      ● 余额 ¥28.28 ↓¥1.23 ⟳
-                                                          ↑ 每个账户一个 pill，
-                                                            配色/字号/间距与 StatsPills 一致
+   3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%   ● 余额 ¥28.28 赠金 ¥3.82 ↓¥1.23 ⟳
+                                                        ↑ 每个账户一个 pill：总额 + 赠送余额 +
+                                                          今日消耗；配色/字号/间距与 StatsPills 一致
 
 ② 侧边栏底部（始终可见；侧边栏收起成窄栏时自动变成单行金额按钮）
    ● 余额           ¥28.28  ↓¥1.23  +1  ⟳
@@ -19,6 +19,8 @@
    ▸ deepseek 账户余额
      在输入框上方统计栏与侧边栏底部显示 DeepSeek 账户余额，并按观测到的余额下降推导今日消耗。
 ```
+
+**两种 dock 形态**：0.1.x 的 composer dock 把注册项**纵向堆叠**，所以本行要靠度量 + 负 `margin-top` 把自己抬到统计行上（下面详述）；0.2.x（含桌面端）改成**一整行 flex**（`display:flex;justify-content:center;gap:12px`，末尾还有 ContextMeter 圆环），统计栏与我们的行本来就是并排的 —— 这时本行按 `data-layout="inline"` 退化成普通可收缩的 flex 子项（`width:auto;flex:0 1 auto;min-width:0`），不再声明整行宽度，否则会把统计栏挤成省略号（`14 轮 46…`）。
 
 **怎么做到同一行的**：`conversation.composer.dock` 是 list slot，每个注册项是纵向堆叠的独立块，所以直接注册必然换行。这里量出本行 top 与统计行（`[data-composer-stats]`）文字顶部的差值，用负 `margin-top` 拉到统计行的水平带上，并锁定与该行相同的 `line-height`，于是两行并成一行。度量是**顺序无关**的（用两者 rect 之差，而不是假定谁在前）。
 
@@ -58,7 +60,7 @@ Authorization: Bearer <DEEPSEEK_API_KEY>
 ### 打包
 
 ```sh
-npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.3.0.tgz
+npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.3.1.tgz
 ```
 
 产物只含运行期文件（`lib/index.js`、`lib/client.js`、`package.json`、`README.md`、`docs/`），约 76 KB：
@@ -117,13 +119,13 @@ node install.mjs --profile tui   # 指定其它 profile
 ```sh
 # A) GUI（推荐）：侧栏「插件」→ 添加插件 → 填本地路径或压缩包 → 安装 → 立即启用
 #    /Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance
-#    或 …/dsh-plugin-deepseek-balance-1.3.0.tgz
+#    或 …/dsh-plugin-deepseek-balance-1.3.1.tgz
 #    装完按提示重启应用（新增的 client 包要重载 boot graph）
 
 # B) 应用自带 CLI：装依赖 + 选入 bundles（等价于 GUI 的两步）
 APP="/Applications/DeepSeek Harness.app/Contents/Resources"
 "$APP/runtime/cli/bin/dsh" plugin --profile desktop add \
-  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.3.0.tgz
+  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.3.1.tgz
 # 再把 dsh-plugin-deepseek-balance 追加进 ~/.dsh/profiles/desktop/package.json 的 dsh.profile.bundles
 # （或直接用：DSH_BIN="$APP/runtime/cli/bin/dsh" node install.mjs --profile desktop --tarball）
 ```
@@ -578,7 +580,7 @@ dsh-plugin-deepseek-balance/
 ├── install.mjs                               # 安装/卸载（link / copy / tarball + bundles 选择 / loader 行）
 ├── cordis.patch.yml                          # 组合包 patch 层：insert 本插件的 loader 行
 ├── locale/{zh,en}.json                       # 插件页展示元信息（中文名 / 描述）
-├── dsh-plugin-deepseek-balance-1.3.0.tgz     # 打包产物（npm run pack / install.mjs --tarball）
+├── dsh-plugin-deepseek-balance-1.3.1.tgz     # 打包产物（npm run pack / install.mjs --tarball）
 ├── docs/
 │   ├── deepseek-balance-api.md               # 官方余额接口调研（含来源链接）
 │   └── dsh-plugin-research.md                # DSH 插件体系调研（host/client/slot/HMR）
