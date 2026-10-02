@@ -62,7 +62,7 @@ Authorization: Bearer <DEEPSEEK_API_KEY>
 ### 打包
 
 ```sh
-npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.3.3.tgz
+npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.0.0.tgz
 ```
 
 产物只含运行期文件（`lib/index.js`、`lib/client.js`、`package.json`、`README.md`、`docs/`），约 76 KB：
@@ -121,13 +121,13 @@ node install.mjs --profile tui   # 指定其它 profile
 ```sh
 # A) GUI（推荐）：侧栏「插件」→ 添加插件 → 填本地路径或压缩包 → 安装 → 立即启用
 #    /Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance
-#    或 …/dsh-plugin-deepseek-balance-1.3.3.tgz
+#    或 …/dsh-plugin-deepseek-balance-1.0.0.tgz
 #    装完按提示重启应用（新增的 client 包要重载 boot graph）
 
 # B) 应用自带 CLI：装依赖 + 选入 bundles（等价于 GUI 的两步）
 APP="/Applications/DeepSeek Harness.app/Contents/Resources"
 "$APP/runtime/cli/bin/dsh" plugin --profile desktop add \
-  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.3.3.tgz
+  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.0.0.tgz
 # 再把 dsh-plugin-deepseek-balance 追加进 ~/.dsh/profiles/desktop/package.json 的 dsh.profile.bundles
 # （或直接用：DSH_BIN="$APP/runtime/cli/bin/dsh" node install.mjs --profile desktop --tarball）
 ```
@@ -584,7 +584,7 @@ dsh-plugin-deepseek-balance/
 ├── install.mjs                               # 安装/卸载（link / copy / tarball + bundles 选择 / loader 行）
 ├── cordis.patch.yml                          # 组合包 patch 层：insert 本插件的 loader 行
 ├── locale/{zh,en}.json                       # 插件页展示元信息（中文名 / 描述）
-├── dsh-plugin-deepseek-balance-1.3.3.tgz     # 打包产物（npm run pack / install.mjs --tarball）
+├── dsh-plugin-deepseek-balance-1.0.0.tgz     # 打包产物（npm run pack / install.mjs --tarball）
 ├── docs/
 │   ├── deepseek-balance-api.md               # 官方余额接口调研（含来源链接）
 │   └── dsh-plugin-research.md                # DSH 插件体系调研（host/client/slot/HMR）
