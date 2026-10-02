@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { editPatch, loadYaml, PACKAGE_NAME, ROW_ID } = await import(
+const { bundlePatchOf, editBundles, editPatch, loadYaml, PACKAGE_NAME, ROW_ID } = await import(
   pathToFileURL(join(dirname(new URL(import.meta.url).pathname), "..", "install.mjs")).href
 );
 
@@ -108,6 +108,49 @@ process.stdout.write("patch editor\n");
   const first = editPatch(path, yaml, false);
   const second = editPatch(path, yaml, false);
   check("detects its own row", first.startsWith("added") && second.includes("already present"), `${first} / ${second}`);
+}
+
+process.stdout.write("bundle selection\n");
+{
+  const patch = readFileSync(join(new URL(import.meta.url).pathname, "..", "..", "cordis.patch.yml"), "utf8");
+  const parsed = yaml.parse(patch);
+  check("shipped bundle patch parses", Array.isArray(parsed), JSON.stringify(parsed));
+  check(
+    "shipped bundle patch inserts the plugin row",
+    parsed?.[0]?.insert?.[0]?.id === ROW_ID && parsed?.[0]?.insert?.[0]?.name === PACKAGE_NAME,
+    JSON.stringify(parsed),
+  );
+}
+{
+  const root = join(sandbox, "bundle-root");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dsh: { bundle: { patch: "./cordis.patch.yml" } } }), "utf8");
+  check("a bundle declaration is read", bundlePatchOf(root) === "./cordis.patch.yml", String(bundlePatchOf(root)));
+  check("a plain package is not a bundle", bundlePatchOf(sandbox) === null);
+}
+{
+  const manifestPath = join(sandbox, "profile-package.json");
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({ name: "dsh-profile-web", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base"] } } }, undefined, 2) + "\n",
+    "utf8",
+  );
+  check("selection reports the edit", editBundles(manifestPath, false).startsWith("added"));
+  const selected = JSON.parse(readFileSync(manifestPath, "utf8"));
+  check("bundle appended last", selected.dsh.profile.bundles.join(",") === `@deepseek-ai/dsh-base,${PACKAGE_NAME}`, JSON.stringify(selected.dsh.profile.bundles));
+  check("unrelated manifest fields survive", selected.name === "dsh-profile-web" && selected.private === true, JSON.stringify(selected));
+  check("selection is idempotent", editBundles(manifestPath, false).includes("already selected"));
+  check("removal reports the edit", editBundles(manifestPath, true).startsWith("removed"));
+  const removed = JSON.parse(readFileSync(manifestPath, "utf8"));
+  check("bundle is gone", removed.dsh.profile.bundles.join(",") === "@deepseek-ai/dsh-base", JSON.stringify(removed.dsh.profile.bundles));
+  check("removal is idempotent", editBundles(manifestPath, true).includes("already absent"));
+}
+{
+  const manifestPath = join(sandbox, "profile-bare.json");
+  writeFileSync(manifestPath, JSON.stringify({ name: "dsh-profile-web" }, undefined, 2) + "\n", "utf8");
+  editBundles(manifestPath, false);
+  const created = JSON.parse(readFileSync(manifestPath, "utf8"));
+  check("a profile without dsh.profile gains the list", created.dsh.profile.bundles.join(",") === PACKAGE_NAME, JSON.stringify(created.dsh));
 }
 
 rmSync(sandbox, { recursive: true, force: true });

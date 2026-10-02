@@ -143,6 +143,28 @@ const SUCCESS = JSON.stringify({
   ],
 });
 
+/* The Desktop plugin manager installs profile bundles and reads a package's
+   display metadata from its exported locale files, so both are part of the
+   package contract the shipped tarball has to satisfy. */
+process.stdout.write("package contract — profile bundle\n");
+{
+  const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  check("manifest declares the bundle patch", manifest.dsh?.bundle?.patch === "./cordis.patch.yml", JSON.stringify(manifest.dsh?.bundle));
+  check("manifest keeps the client declaration", manifest.dsh?.client?.platform === "web");
+  check("bundle patch ships in the tarball", manifest.files.includes("cordis.patch.yml"));
+  check("locale metadata ships in the tarball", manifest.files.includes("locale/*.json"));
+  check("locale metadata is exported", manifest.exports?.["./locale/*.json"] === "./locale/*.json", JSON.stringify(manifest.exports));
+  const zh = JSON.parse(readFileSync(join(ROOT, "locale", "zh.json"), "utf8"));
+  const en = JSON.parse(readFileSync(join(ROOT, "locale", "en.json"), "utf8"));
+  check("Chinese display title is the agreed name", zh.meta?.title === "deepseek 账户余额", JSON.stringify(zh.meta));
+  check("Chinese display description is present", typeof zh.meta?.description === "string" && zh.meta.description.length > 0, JSON.stringify(zh.meta));
+  check(
+    "English display metadata is present",
+    typeof en.meta?.title === "string" && typeof en.meta?.description === "string",
+    JSON.stringify(en.meta),
+  );
+}
+
 //#region host half
 const plugin = await import(pathToFileURL(join(ROOT, "lib/index.js")).href);
 

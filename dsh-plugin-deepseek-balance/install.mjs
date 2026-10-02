@@ -213,6 +213,52 @@ function editPatch(patchPath, yaml, remove) {
 }
 
 /**
+ * Read a package's bundle patch declaration.
+ * @param dir - the package directory.
+ * @returns the declared patch path, or null when the package is not a bundle.
+ */
+function bundlePatchOf(dir) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    const patch = manifest?.dsh?.bundle?.patch;
+    return typeof patch === "string" && patch.length > 0 ? patch : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add or remove this package in the profile's ordered bundle list.
+ *
+ * The profile manifest is rewritten exactly as the Desktop plugin manager
+ * writes it (two-space JSON plus a trailing newline), so the two paths never
+ * fight over formatting, and every unrelated field is retained.
+ * @param manifestPath - absolute `package.json` path of the profile.
+ * @param remove - whether to drop the package instead of appending it.
+ * @returns a human-readable summary of what changed.
+ */
+function editBundles(manifestPath, remove) {
+  const source = readFileSync(manifestPath, "utf8");
+  const manifest = JSON.parse(source);
+  const previous = manifest.dsh?.profile?.bundles ?? [];
+  const bundles = remove
+    ? previous.filter((item) => item !== PACKAGE_NAME)
+    : [...previous, ...(previous.includes(PACKAGE_NAME) ? [] : [PACKAGE_NAME])];
+  if (JSON.stringify(previous) === JSON.stringify(bundles)) {
+    return remove ? "bundle already absent from dsh.profile.bundles" : "bundle already selected in dsh.profile.bundles";
+  }
+  manifest.dsh = {
+    ...manifest.dsh,
+    profile: {
+      ...manifest.dsh?.profile,
+      bundles,
+    },
+  };
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`, "utf8");
+  return remove ? "removed the bundle from dsh.profile.bundles" : "added the bundle to dsh.profile.bundles";
+}
+
+/**
  * Run the install/uninstall end to end.
  * @param options - parsed CLI options.
  */
@@ -267,21 +313,39 @@ function main(options) {
   }
 
   const yaml = loadYaml(profileDir);
-  if (yaml === undefined) {
-    process.stderr.write("install.mjs: could not load `yaml`; please add this row to " + patchPath + " by hand:\n");
-    process.stderr.write(`  - insert:\n      - id: ${ROW_ID}\n        name: ${PACKAGE_NAME}\n`);
-    process.exit(1);
+  /* A package that declares a bundle patch is a profile layer, not a row: the
+     profile selects it through its ordered `dsh.profile.bundles` list and the
+     package's own patch supplies the row. That is also the path the Desktop
+     plugin manager uses, so writing a row here too would mount the plugin
+     twice. Non-bundle packages keep the historical row edit. */
+  const bundlePatch = bundlePatchOf(HERE);
+  if (bundlePatch !== null) {
+    process.stdout.write(`${editBundles(join(profileDir, "package.json"), removing)}\n`);
+    if (yaml === undefined) {
+      process.stdout.write(`install.mjs: could not load \`yaml\`; if a loader row for ${PACKAGE_NAME} exists in ${patchPath}, remove it by hand\n`);
+    } else {
+      process.stdout.write(`${editPatch(patchPath, yaml, true)}\n`);
+    }
+  } else {
+    if (yaml === undefined) {
+      process.stderr.write("install.mjs: could not load `yaml`; please add this row to " + patchPath + " by hand:\n");
+      process.stderr.write(`  - insert:\n      - id: ${ROW_ID}\n        name: ${PACKAGE_NAME}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`${editPatch(patchPath, yaml, removing)}\n`);
   }
 
-  process.stdout.write(`${editPatch(patchPath, yaml, removing)}\n`);
   if (removing) {
-    process.stdout.write("Done. Refresh the browser (the row is gone from the tree).\n");
+    process.stdout.write("Done. Refresh the browser (the plugin is gone from the tree).\n");
   } else {
     const webUrl = process.env.DSH_WEB_URL ?? "http://127.0.0.1:3080";
     process.stdout.write(
       "Done.\n"
       + (artifact === undefined ? "" : `  - Artifact: ${artifact}\n`)
-      + "  - The loader row is applied live, but the HOST half is not re-imported:\n"
+      + (bundlePatch === null
+        ? "  - The loader row is applied live, but the HOST half is not re-imported:\n"
+        : `  - The profile now lists ${PACKAGE_NAME} in dsh.profile.bundles, so its patch layer supplies the row.\n`
+          + "    The HOST half is not re-imported:\n")
       + "    restart the profile (`dsh web`) for host-side changes to take effect.\n"
       + "  - Refresh the browser to load the new client bundle.\n"
       + `  - Endpoint: ${webUrl}/deepseek-balance (add ?force=1 to bypass the cache).\n`,
@@ -289,7 +353,7 @@ function main(options) {
   }
 }
 
-export { editPatch, loadYaml, parseArgs, PACKAGE_NAME, ROW_ID };
+export { bundlePatchOf, editBundles, editPatch, loadYaml, parseArgs, PACKAGE_NAME, ROW_ID };
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   main(parseArgs());

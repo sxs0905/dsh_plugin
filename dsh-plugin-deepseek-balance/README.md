@@ -58,7 +58,7 @@ Authorization: Bearer <DEEPSEEK_API_KEY>
 ### 打包
 
 ```sh
-npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.2.0.tgz
+npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.3.0.tgz
 ```
 
 产物只含运行期文件（`lib/index.js`、`lib/client.js`、`package.json`、`README.md`、`docs/`），约 76 KB：
@@ -97,15 +97,38 @@ node install.mjs --profile tui   # 指定其它 profile
 脚本做两件事：
 
 1. `dsh plugin --profile web add <spec>`，由 pnpm 把包物化进 profile 的 `node_modules`；
-2. 往 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加一行 loader 行（保留原文件注释，输出块状 YAML）：
+2. 把插件挂进 profile：本包声明了 `dsh.bundle.patch`（见下），所以脚本改的是 profile 的 `dsh.profile.bundles` 有序列表，由包内 `cordis.patch.yml` 提供 loader 行：
 
 ```yaml
+# cordis.patch.yml（随包发布）
 - insert:
     - id: deepseek-balance
       name: dsh-plugin-deepseek-balance
 ```
 
+> **为什么是组合包（bundle）**：DSH 桌面端「插件」页只安装/管理**组合包**（`dsh.bundle.patch`），普通依赖会被 `pluginManager.inspect` 以 `not-a-bundle` 拒绝。改成组合包后，桌面端可以直接从本地路径/压缩包安装、启停，并按 `locale/*.json` 显示中文名与描述。脚本对"组合包"和"普通包"是二选一的：组合包只改 `dsh.profile.bundles`（并清理可能残留的 loader 行），普通包才写 loader 行 —— 两条路不会同时生效，避免重复挂载。
+
 脚本是幂等的：重复执行不会重复添加，也不会重复打包出错。
+
+### 桌面端（DeepSeek Harness.app）
+
+桌面端跑的是保留 profile `desktop`（`~/.dsh/profiles/desktop`），且这个 profile **只允许应用自带的 CLI 管理**（用 PATH 上其它 `dsh` 会报 `profile "desktop" is managed exclusively by the Electron application`）。两条装法：
+
+```sh
+# A) GUI（推荐）：侧栏「插件」→ 添加插件 → 填本地路径或压缩包 → 安装 → 立即启用
+#    /Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance
+#    或 …/dsh-plugin-deepseek-balance-1.3.0.tgz
+#    装完按提示重启应用（新增的 client 包要重载 boot graph）
+
+# B) 应用自带 CLI：装依赖 + 选入 bundles（等价于 GUI 的两步）
+APP="/Applications/DeepSeek Harness.app/Contents/Resources"
+"$APP/runtime/cli/bin/dsh" plugin --profile desktop add \
+  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.3.0.tgz
+# 再把 dsh-plugin-deepseek-balance 追加进 ~/.dsh/profiles/desktop/package.json 的 dsh.profile.bundles
+# （或直接用：DSH_BIN="$APP/runtime/cli/bin/dsh" node install.mjs --profile desktop --tarball）
+```
+
+装完的效果：输入框上方统计栏与侧边栏底部出现余额；侧栏「插件」页里这张卡片显示**「deepseek 账户余额」**（中文名来自 `locale/zh.json` 的 `meta`）。注意桌面端 0.2.0 已把插件配置界面搬到侧栏「插件」面板（`settings.plugin.item` 不再存在），所以 1.2.0 那张"设置→插件"配置卡片在桌面端不会出现（本插件在 0.1.5 系 profile 上仍可用）。
 
 ### 装完之后
 
@@ -135,7 +158,7 @@ dsh --version
 # 1) 先启动一次 profile：生成 profiles/web/ 和依赖闭包（install.mjs 需要其中的 yaml）
 dsh web            # 看到打印的 http://127.0.0.1:3080/?token=… 后 Ctrl-C 即可
 
-# 2) 从源码打包并安装插件（= pnpm add + 写入 loader 行）
+# 2) 从源码打包并安装插件（= pnpm add + 选入 dsh.profile.bundles）
 cd $PLUGIN
 node install.mjs --tarball
 
@@ -170,7 +193,7 @@ DSH_BIN=/path/to/dsh node install.mjs --tarball
 
 ### 第 1 步：让 profile 存在（并装好依赖闭包）
 
-`install.mjs` 会往 `$DSH_HOME/profiles/<profile>/cordis.patch.yml` 写 loader 行，并用 profile 闭包里的 `yaml` 解析该文件，所以**目标 profile 必须先存在、且至少启动过一次**：
+`install.mjs` 会把插件挂进 `$DSH_HOME/profiles/<profile>/`：本包是组合包，所以它改的是 profile 的 `dsh.profile.bundles` 列表（普通包才写 `cordis.patch.yml` 的 loader 行，那时才需要 profile 闭包里的 `yaml`）。无论哪条路，**目标 profile 必须先存在、且至少启动过一次**：
 
 ```sh
 dsh web                    # 默认 profile；等价于 dsh --profile web
@@ -178,7 +201,7 @@ dsh web                    # 默认 profile；等价于 dsh --profile web
 ```
 
 - 首次启动会在 `$DSH_HOME`（默认 `~/.dsh`）下生成 `profiles/web/`，并**在启动过程中**把依赖闭包装进 `profiles/node_modules/`（含 `yaml`）。看到终端打印的 `http://127.0.0.1:3080/?token=…` 就说明起来了，按 Ctrl-C 退出即可，不影响后续安装。
-- 只想生成 profile 文件、不启动服务：`dsh --profile web --dump-config`。但它**不会**安装 `profiles/node_modules/`，因此随后运行 `install.mjs` 会提示 `could not load 'yaml'` 并把要手动添加的 loader 行打印出来（见「常见问题」）。
+- 只想生成 profile 文件、不启动服务：`dsh --profile web --dump-config`。但它**不会**安装 `profiles/node_modules/`：对组合包没有影响（改的是 `package.json`），对普通包会让 `install.mjs` 打印要手动添加的 loader 行（见「常见问题」）。
 - 自定义 `DSH_HOME`：`DSH_HOME=/path/to/home dsh web`，后续 `install.mjs` 也用同一个 `DSH_HOME`（脚本默认读 `$DSH_HOME`，没设就用 `~/.dsh`）。
 
 ### 第 2 步：从源码安装插件
@@ -190,10 +213,10 @@ node install.mjs --tarball
 
 它依次做四件事（幂等，可反复执行）：
 
-1. `npm pack` 把当前目录打成 `dsh-plugin-deepseek-balance-<version>.tgz`（只含 `lib/`、`package.json`、`README.md`、`docs/`）；
+1. `npm pack` 把当前目录打成 `dsh-plugin-deepseek-balance-<version>.tgz`（含 `lib/`、`cordis.patch.yml`、`locale/`、`package.json`、`README.md`、`docs/`）；
 2. `dsh plugin --profile web remove dsh-plugin-deepseek-balance`（忽略失败：避免 pnpm 沿用旧的 `link:` 解析）；
 3. `dsh plugin --profile web add file:$PLUGIN/dsh-plugin-deepseek-balance-<version>.tgz`，由 pnpm 把包（以及它的运行期依赖 `@deepseek-ai/schemastery`）装进 profile 的 `node_modules`；
-4. 往 `cordis.patch.yml` 追加 loader 行（已存在则跳过）。
+4. 把包选进 profile 的 `dsh.profile.bundles`（loader 行由包内 `cordis.patch.yml` 提供；同时清理可能残留的同名 loader 行）。
 
 其它模式见上文「安装」小节的对照表：`--copy`（目录副本）、默认 `link:`（开发用，客户端 HMR 热更新）、`--profile <name>`、`--remove`。
 
@@ -263,14 +286,14 @@ node test/verify-live.mjs          # 20 passed
 | 源码目录**换了位置** | profile 里记的是绝对路径（`file:/…/xxx.tgz`），旧的会失效；到新位置重新 `node install.mjs --tarball` 即可（脚本先 remove 再 add） |
 | 只升级到刚打好的包 | `npm run pack` 后 `node install.mjs --tarball`（先 remove 再 add 会刷新 lock 里的 tarball 校验；同版本号但 tgz 内容变了时，直接 `dsh plugin --profile web update` 会撞上 integrity 校验），然后重启 |
 | 彻底重置 | `rm -rf ~/.dsh/profiles/web && dsh web`（重新生成 profile），再执行第 2、3 步 |
-| 卸载 | `cd $PLUGIN && node install.mjs --remove`（移除依赖 + loader 行） |
+| 卸载 | `cd $PLUGIN && node install.mjs --remove`（移除依赖 + 从 `dsh.profile.bundles` 移除，并清理残留 loader 行） |
 
 装完之后文件落在：
 
 ```
-~/.dsh/profiles/web/package.json          # dependencies: "dsh-plugin-deepseek-balance": "file:/…/dsh-plugin-deepseek-balance-1.2.0.tgz"
+~/.dsh/profiles/web/package.json          # dependencies 里的 file: 路径 + dsh.profile.bundles 里的 dsh-plugin-deepseek-balance
 ~/.dsh/profiles/web/node_modules/…        # 包实体（含 @deepseek-ai/schemastery）
-~/.dsh/profiles/web/cordis.patch.yml      # loader 行：- insert: [{ id: deepseek-balance, name: dsh-plugin-deepseek-balance }]
+~/.dsh/profiles/web/cordis.patch.yml      # 只有按 id 覆盖 config 时才需要写（loader 行来自包内 cordis.patch.yml）
 ~/.dsh/deepseek-balance-ledger.json       # 今日消耗账本（可选，trackDailySpend 关闭时不写）
 ~/.dsh/.credentials.yaml                  # API Key（refs.DEEPSEEK_API_KEY）
 ```
@@ -433,7 +456,15 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 
 ## 配置（可选）
 
-在 `cordis.patch.yml` 的那一行里加 `config`：
+组合包安装后，这一行由包内 `cordis.patch.yml` 提供（`node_modules` 里的副本不要去改，升级会被覆盖）。要加配置就给 profile 的 `cordis.patch.yml` 写一条**按 id 覆盖**的行：
+
+```yaml
+- id: deepseek-balance
+  config:
+    accounts: […]
+```
+
+如果还是老的"loader 行"安装（普通包），则直接在那条 `insert` 行里加 `config` 即可，两种写法等价：
 
 ```yaml
 - insert:
@@ -466,6 +497,8 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 密钥本身不写在配置里 —— 只写**引用名**，实际值由 harness 凭据服务解析（环境变量 / `$DSH_HOME/.credentials.yaml` / `.env`）。
 
 ### 在「设置 → 插件」里直接改（1.2.0+）
+
+> 桌面端 0.2.0 换了地方：插件页改到侧栏「插件」，配置页 slot 不再是 `settings.plugin.item`；插件页里的**中文名与描述来自包内 `locale/*.json` 的 `meta`**（缺失才回退 `package.json` 的 name/description），本包已提供 `locale/zh.json`（「deepseek 账户余额」）与 `locale/en.json`。本节描述的 settings 卡片仍适用于 0.1.5 系 profile。
 
 `package.json` 里**没有**能改插件管理面板文案的元数据字段：本版 DSH 的 `dsh` 清单只认 `bundle` / `profile` / `client` / `configTrees` / `sessionFormatMigration` / `moduleFallback`（见 `@deepseek-ai/dsh-package-manifest` 的 `DshManifest`），面板也不读 `description`。要出现在「设置 → 插件 → 插件配置」里，走的是插件自己贡献一张卡：**host 半注册一个 settings 命名空间，client 半用同一个命名空间为 key 注册进 `settings.plugin.item` slot**，卡片自己画标题、描述和字段。本插件已按这条路实现：
 
@@ -509,7 +542,7 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 
 - 改 `lib/client.js`：以 `file:`（tarball 或目录副本）安装时，服务端加载的是 profile 里 `node_modules/dsh-plugin-deepseek-balance/lib/client.js` 那份**副本**，改源码目录不会生效（要重新 `node install.mjs --tarball`）。直接覆盖那份副本则**实测服务端立即返回新内容**——boot index 的 `rev` 只跟随 bundle 内容变化（重装同一份 bundle、只改版本号后 `rev` 不变），`dsh-client-hmr` 每 500ms stat-poll 该文件并推送重挂，所以通常无需重启 profile；界面没变化时刷新一次浏览器即可。
 - 改 `lib/index.js`：host 半不会热重载，需要重启 profile（改 `cordis.patch.yml` 里的 `config` 会被实时重应用，但模块代码不会重新 import）。
-- 插件包**不要**同时声明 `dsh.bundle.patch`：那会让 CLI 把它加入 `bundles` 层，与 `install.mjs` 写的 loader 行重复挂载同一个包（client-modules 会因同一包出现在多个 Loader 源而报错）。当前实现刻意只用 loader 行这一种方式。
+- 本包**是**一个组合包（`dsh.bundle.patch: ./cordis.patch.yml`），所以它的 loader 行只从这一层来：profile 把它列进 `dsh.profile.bundles` 即可，**不要再手写同名的 loader 行**（同一个包出现在多个 Loader 源会被 client-modules 拒绝）。`install.mjs` 已按声明二选一：组合包改 `dsh.profile.bundles`，普通包才写行。
 
 ## 安全说明
 
@@ -523,7 +556,7 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 ```sh
 node test/run-tests.mjs          # 164 项：host 逻辑、多账户、今日消耗 ledger（累计/充值/跨天/持久化/多币种/后台采样）、HTML、请求卫生、客户端两个席位与渲染
 node test/run-tests.mjs --live   # 追加一次读取真实凭据 + 真实 API 的调用
-node test/install-patch.test.mjs # 17 项：cordis.patch.yml 编辑器（幂等、保留注释、块状输出）
+node test/install-patch.test.mjs # 29 项：cordis.patch.yml 编辑器 + dsh.profile.bundles 选择（幂等）
 node test/verify-live.mjs        # 18 项：对运行中的 GUI 做端到端核验（只读，不重启）
 ```
 
@@ -542,8 +575,10 @@ dsh-plugin-deepseek-balance/
 ├── package.json                              # main/exports + dsh.client 声明 + scripts
 ├── lib/index.js                              # host 半：凭据解析、余额读取、缓存、HTTP 路由
 ├── lib/client.js                             # 浏览器半：手写 module-loader bundle + 统计栏/侧边栏两个席位
-├── install.mjs                               # 安装/卸载（link / copy / tarball + cordis.patch.yml 编辑）
-├── dsh-plugin-deepseek-balance-1.2.0.tgz     # 打包产物（npm run pack / install.mjs --tarball）
+├── install.mjs                               # 安装/卸载（link / copy / tarball + bundles 选择 / loader 行）
+├── cordis.patch.yml                          # 组合包 patch 层：insert 本插件的 loader 行
+├── locale/{zh,en}.json                       # 插件页展示元信息（中文名 / 描述）
+├── dsh-plugin-deepseek-balance-1.3.0.tgz     # 打包产物（npm run pack / install.mjs --tarball）
 ├── docs/
 │   ├── deepseek-balance-api.md               # 官方余额接口调研（含来源链接）
 │   └── dsh-plugin-research.md                # DSH 插件体系调研（host/client/slot/HMR）

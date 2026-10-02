@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "deepseek 账户余额",
+    "description": "在输入框上方统计栏与侧边栏底部显示 DeepSeek 账户余额，并按观测到的余额下降推导今日消耗。"
+  }
+}

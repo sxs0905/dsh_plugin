@@ -1,0 +1,13 @@
+# dsh-plugin-deepseek-balance as a profile bundle layer.
+#
+# A profile picks this plugin up by naming the package in its ordered
+# `dsh.profile.bundles` list; this patch then contributes the one loader row
+# the plugin needs. That is the path the Desktop plugin manager uses (install
+# from Settings -> Plugin page, then enable), so no hand-edited profile
+# `cordis.patch.yml` row is involved there.
+#
+# `install.mjs` detects this declaration and edits `dsh.profile.bundles`
+# instead of writing a row, so the row never exists twice.
+- insert:
+    - id: deepseek-balance
+      name: dsh-plugin-deepseek-balance

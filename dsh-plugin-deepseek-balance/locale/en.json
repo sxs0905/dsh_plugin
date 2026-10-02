@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DeepSeek account balance",
+    "description": "Shows the DeepSeek account balance in the composer stats strip and the sidebar footer, and derives today's spend from observed balance drops."
+  }
+}
