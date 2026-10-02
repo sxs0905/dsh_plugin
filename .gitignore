@@ -53,3 +53,8 @@ native/system/test/bin/
 # hand-authored source that must be committed for the plugin to be installable
 # from a fresh clone. A later negation wins over the earlier directory rule.
 !dsh-plugin-deepseek-balance/lib/
+
+# Local Chrome profile left behind by one browser-automation run. It is not part
+# of the plugin and was purged from history; keep it out so `git add -A` cannot
+# put 117 MB back into the repository.
+.chrome-profile/
