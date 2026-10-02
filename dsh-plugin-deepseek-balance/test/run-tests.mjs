@@ -1143,8 +1143,8 @@ const realClearInterval = globalThis.clearInterval;
   check("dock tooltip lists every account", String(dockTree?.props?.title).includes("主账号") && String(dockTree?.props?.title).includes("备用"), dockTree?.props?.title);
   check("dock tooltip carries the failure reason", String(dockTree?.props?.title).includes("Authentication Fails"));
 
-  /* A single default account keeps no account name and no separator; the
-     headline amount is labelled 充值余额 instead of a generic 余额. */
+  /* A single default account keeps the generic 余额 label and no separator;
+     the split amounts themselves carry no words. */
   stubPayload = payloadOf([account("account-1", "", "32.30")]);
   render(dock, { t: translate, variant: "dock" });
   await settle();
@@ -1152,21 +1152,28 @@ const realClearInterval = globalThis.clearInterval;
   const singleChildren = singleTree?.children ?? [];
   check("single account renders one pill", singleChildren.filter((child) => child?.type === "span" && child?.props?.className === "dsb_pill").length === 1);
   check("single account renders no separator", singleChildren.filter((child) => child?.props?.className === "dsb_sep").length === 0);
-  check("the headline amount is labelled 充值余额", JSON.stringify(singleChildren).includes("[field.toppedUp]"));
-  check("no generic 余额 label sits beside the split", !JSON.stringify(singleChildren).includes("[chip.label]"));
+  check("the dock keeps the generic 余额 label", JSON.stringify(singleChildren).includes("[chip.label]"));
+  check(
+    "no 充值/赠金 word labels are rendered",
+    !JSON.stringify(singleChildren).includes("[field.toppedUp]") && !JSON.stringify(singleChildren).includes("[field.granted]"),
+    JSON.stringify(singleChildren),
+  );
 
-  /* The headline is the topped-up part, never the total: 95.41 = 91.59 + 3.82. */
+  /* The headline is the topped-up part with the grant as a "+" tail, never the
+     total: 95.41 = 91.59 + 3.82. */
   const splitBalance = { currency: "CNY", total: "95.41", granted: "3.82", toppedUp: "91.59" };
   stubPayload = payloadOf([{ ...account("account-1", "", "95.41"), primary: splitBalance, balances: [splitBalance] }]);
   render(dock, { t: translate, variant: "dock" });
   await settle();
   const splitDock = JSON.stringify(render(dock, { t: translate, variant: "dock" })?.children);
-  check("the dock headline shows 充值余额", splitDock.includes("¥91.59"), splitDock);
+  check("the dock headline shows the topped-up balance", splitDock.includes("¥91.59"), splitDock);
+  check("the grant rides along as a + tail", splitDock.includes("+¥3.82"), splitDock);
   check("the dock does not show the total", !splitDock.includes("¥95.41"), splitDock);
   render(footer, { wide: true, t: translate, variant: "footer" });
   await settle();
   const splitFooter = JSON.stringify(render(footer, { wide: true, t: translate, variant: "footer" })?.children);
-  check("the sidebar headline shows 充值余额", splitFooter.includes("¥91.59") && !splitFooter.includes("¥95.41"), splitFooter);
+  check("the sidebar headline shows the topped-up balance", splitFooter.includes("¥91.59") && !splitFooter.includes("¥95.41"), splitFooter);
+  check("the sidebar grant rides along as a + tail", splitFooter.includes("+¥3.82"), splitFooter);
 
   /* Today's spend rides along on each account reading. */
   stubPayload = payloadOf([{ ...account("account-1", "", "32.30"), spentToday: "1.23", spentDate: "2026-09-20" }]);
@@ -1236,8 +1243,8 @@ const realClearInterval = globalThis.clearInterval;
   await settle();
   const grantTree = render(dock, { t: translate, variant: "dock" });
   const grantText = JSON.stringify(grantTree?.children);
-  check("dock shows the granted balance beside the total", grantText.includes("dsb_grant") && grantText.includes("¥3.82"), grantText);
-  check("the granted balance is labelled", grantText.includes("[field.granted]"), grantText);
+  check("dock shows the granted balance beside the headline", grantText.includes("dsb_grant") && grantText.includes("¥3.82"), grantText);
+  check("the granted balance explains itself on hover", grantText.includes("[field.granted]"), grantText);
   render(footer, { wide: true, t: translate, variant: "footer" });
   await settle();
   const grantFooter = render(footer, { wide: true, t: translate, variant: "footer" });

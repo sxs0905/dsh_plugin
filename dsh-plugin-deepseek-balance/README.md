@@ -7,13 +7,14 @@
 ```
 ① 输入框上方统计栏 —— 与「3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%」
    同一行的空侧，不换行（右侧优先，右侧不够就用左侧）：
-   3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%   ● 充值 ¥25.47 赠金 ¥2.81 ↓¥1.23 ⟳
-                                                        ↑ 每个账户一个 pill：充值余额 + 赠送余额
-                                                          （为 0 时不显示）+ 今日消耗；配色/字号/
-                                                          间距与 StatsPills 一致
+   3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%   ● 余额 ¥25.47 +¥2.81 ↓¥1.23 ⟳
+                                                        ↑ 每个账户一个 pill：主数字是充值余额，
+                                                          赠送余额以 + 号跟在后面（为 0 时不显示），
+                                                          再往后是今日消耗；配色/字号/间距与
+                                                          StatsPills 一致
 
 ② 侧边栏底部（始终可见；侧边栏收起成窄栏时自动变成单行金额按钮）
-   ● 充值 ¥25.47  赠金 ¥2.81  ↓¥1.23  +1  ⟳
+   ● 余额 ¥25.47 +¥2.81  ↓¥1.23  +1  ⟳
       ↑ 绿点=正常，黄点=账户不可用，红点=读取失败；+1 表示另有账户
 
 ③ 设置 → 插件 → 插件配置（中文名 + 描述 + 可直接编辑的配置项，改完即生效）
@@ -61,7 +62,7 @@ Authorization: Bearer <DEEPSEEK_API_KEY>
 ### 打包
 
 ```sh
-npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.3.2.tgz
+npm run pack          # 等价于 npm pack，产出 dsh-plugin-deepseek-balance-1.3.3.tgz
 ```
 
 产物只含运行期文件（`lib/index.js`、`lib/client.js`、`package.json`、`README.md`、`docs/`），约 76 KB：
@@ -120,13 +121,13 @@ node install.mjs --profile tui   # 指定其它 profile
 ```sh
 # A) GUI（推荐）：侧栏「插件」→ 添加插件 → 填本地路径或压缩包 → 安装 → 立即启用
 #    /Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance
-#    或 …/dsh-plugin-deepseek-balance-1.3.2.tgz
+#    或 …/dsh-plugin-deepseek-balance-1.3.3.tgz
 #    装完按提示重启应用（新增的 client 包要重载 boot graph）
 
 # B) 应用自带 CLI：装依赖 + 选入 bundles（等价于 GUI 的两步）
 APP="/Applications/DeepSeek Harness.app/Contents/Resources"
 "$APP/runtime/cli/bin/dsh" plugin --profile desktop add \
-  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.3.2.tgz
+  file:/Users/han/Documents/code/deepseek-harness/dsh_plugin/dsh-plugin-deepseek-balance/dsh-plugin-deepseek-balance-1.3.3.tgz
 # 再把 dsh-plugin-deepseek-balance 追加进 ~/.dsh/profiles/desktop/package.json 的 dsh.profile.bundles
 # （或直接用：DSH_BIN="$APP/runtime/cli/bin/dsh" node install.mjs --profile desktop --tarball）
 ```
@@ -499,7 +500,7 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 
 密钥本身不写在配置里 —— 只写**引用名**，实际值由 harness 凭据服务解析（环境变量 / `$DSH_HOME/.credentials.yaml` / `.env`）。
 
-**金额怎么显示**：和平台控制台一致按「充值余额 / 赠送余额」拆分 —— 主数字是**充值余额**（`topped_up_balance`），旁边是**赠送余额**（`granted_balance`，**为 0 时不显示**）；**不显示总额**（总额只是两者之和）。旧版 host 半没下发 `toppedUp` 时才退回总额。鼠标悬停的 tooltip 里仍是完整拆分（总余额 / 赠金 / 充值 + 读取时间、密钥来源）。
+**金额怎么显示**：和平台控制台一致按「充值余额 / 赠送余额」拆分，但界面上**不出现中文标签** —— 主数字是**充值余额**（`topped_up_balance`），赠送余额（`granted_balance`）以 `+` 跟在后面、**为 0 时整段不渲染**；**不显示总额**（总额只是两者之和，本行也从没显示过）。旧版 host 半没下发 `toppedUp` 时才退回总额。鼠标悬停的 tooltip 里仍是完整拆分（总余额 / 赠金 / 充值 + 读取时间、密钥来源），`+¥2.81` 那段也带「赠金 ¥2.81」的悬浮说明。
 
 ### 在「设置 → 插件」里直接改（1.2.0+）
 
@@ -583,7 +584,7 @@ dsh-plugin-deepseek-balance/
 ├── install.mjs                               # 安装/卸载（link / copy / tarball + bundles 选择 / loader 行）
 ├── cordis.patch.yml                          # 组合包 patch 层：insert 本插件的 loader 行
 ├── locale/{zh,en}.json                       # 插件页展示元信息（中文名 / 描述）
-├── dsh-plugin-deepseek-balance-1.3.2.tgz     # 打包产物（npm run pack / install.mjs --tarball）
+├── dsh-plugin-deepseek-balance-1.3.3.tgz     # 打包产物（npm run pack / install.mjs --tarball）
 ├── docs/
 │   ├── deepseek-balance-api.md               # 官方余额接口调研（含来源链接）
 │   └── dsh-plugin-research.md                # DSH 插件体系调研（host/client/slot/HMR）

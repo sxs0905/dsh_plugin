@@ -1274,24 +1274,24 @@ window.__ModuleLoader__.load({
           if (children.length > 0) {
             children.push(react.createElement("span", { className: "dsb_sep", "aria-hidden": true, key: `sep-${account.id}` }, "·"));
           }
-          /* The headline is 充值余额, so the account keeps only its own name (for
-             a multi-account row); the generic "余额" label would be redundant
-             now that both split amounts carry their own. */
-          const name = accountName(account, t, multiple, true);
+          /* The split reads as one headline plus a "+grant" tail, with no word
+             labels: `余额 ¥91.69 +¥2.95`. A multi-account row keeps its own
+             name; the generic 余额 label is dropped only while overlaid, where
+             the row shares the stats line and space is tight. */
+          const name = accountName(account, t, multiple, overlaid);
           const granted = grantedValueOf(account);
           children.push(react.createElement(
             "span",
             { className: "dsb_pill", key: account.id },
             toneDot(accountTone(account)),
             name.length === 0 ? null : react.createElement("span", { className: "dsb_n" }, name),
-            react.createElement("span", { className: "dsb_n" }, t("field.toppedUp")),
             react.createElement("span", { className: "dsb_v" }, accountValue(account)),
             granted === null
               ? null
               : react.createElement(
                 "span",
                 { className: "dsb_grant", key: "grant", title: t("field.granted") + " " + granted },
-                t("field.granted") + " " + granted,
+                "+" + granted,
               ),
             spentTodayOf(account) === null
               ? null
@@ -1357,8 +1357,8 @@ window.__ModuleLoader__.load({
             type: "button",
             className: "dsb_button",
             title: tooltip,
-            "aria-label": t("field.toppedUp") + " " + value
-              + (granted === null ? "" : " " + t("field.granted") + " " + granted)
+            "aria-label": t("chip.label") + " " + value
+              + (granted === null ? "" : " +" + granted)
               + " — " + t("chip.refresh"),
             onClick: () => refresh(true),
           },
@@ -1376,20 +1376,14 @@ window.__ModuleLoader__.load({
         "div",
         { className: "dsb_root", "data-tone": tone, title: tooltip },
         toneDot(tone),
-        /* With a reading in hand the two split amounts label themselves, so the
-           generic "余额" line is only there while loading or when the read
-           failed outright. */
-        shown === null
-          ? react.createElement("span", { className: "dsb_label" }, busy === true ? t("chip.busy") : t("chip.label"))
-          : null,
-        react.createElement("span", { className: "dsb_label" }, t("field.toppedUp")),
+        react.createElement("span", { className: "dsb_label" }, busy === true && shown === null ? t("chip.busy") : t("chip.label")),
         react.createElement("span", { className: "dsb_value" }, value),
         granted === null
           ? null
           : react.createElement(
             "span",
             { className: "dsb_grant", title: t("field.granted") + " " + granted },
-            t("field.granted") + " " + granted,
+            "+" + granted,
           ),
         spentTodayOf(shown) === null
           ? null
