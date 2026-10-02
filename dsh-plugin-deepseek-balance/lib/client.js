@@ -267,13 +267,24 @@ window.__ModuleLoader__.load({
       return Number.isNaN(at) ? "" : new Date(at).toLocaleTimeString();
     }
     /**
-     * The amount to show for one account.
+     * The headline amount to show for one account: its 充值余额 (the topped-up
+     * part), NOT the total. The platform shows the balance split into 充值余额
+     * and 赠送余额, and the total is only their sum, so the headline reports the
+     * part that is actually money on the account; the granted part is rendered
+     * beside it by {@link grantedValueOf}.
+     *
+     * A payload that predates the split (no `toppedUp` field, e.g. an older
+     * host half still loaded) falls back to the total rather than showing
+     * nothing.
      * @param account - one reading from the host payload.
-     * @returns a display string.
+     * @returns a display string, or `—` for a failed reading.
      */
     function accountValue(account) {
       if (account.ok !== true || account.primary === null || account.primary === undefined) return "—";
-      return formatAmount(account.primary.currency, account.primary.total);
+      const balance = account.primary;
+      const toppedUp = Number.parseFloat(balance.toppedUp);
+      const amount = Number.isFinite(toppedUp) ? balance.toppedUp : balance.total;
+      return formatAmount(balance.currency, amount);
     }
     /**
      * The granted ("赠送余额") part of one account's reading, as a display
@@ -1263,13 +1274,17 @@ window.__ModuleLoader__.load({
           if (children.length > 0) {
             children.push(react.createElement("span", { className: "dsb_sep", "aria-hidden": true, key: `sep-${account.id}` }, "·"));
           }
-          const name = accountName(account, t, multiple, overlaid);
+          /* The headline is 充值余额, so the account keeps only its own name (for
+             a multi-account row); the generic "余额" label would be redundant
+             now that both split amounts carry their own. */
+          const name = accountName(account, t, multiple, true);
           const granted = grantedValueOf(account);
           children.push(react.createElement(
             "span",
             { className: "dsb_pill", key: account.id },
             toneDot(accountTone(account)),
             name.length === 0 ? null : react.createElement("span", { className: "dsb_n" }, name),
+            react.createElement("span", { className: "dsb_n" }, t("field.toppedUp")),
             react.createElement("span", { className: "dsb_v" }, accountValue(account)),
             granted === null
               ? null
@@ -1342,7 +1357,9 @@ window.__ModuleLoader__.load({
             type: "button",
             className: "dsb_button",
             title: tooltip,
-            "aria-label": t("chip.label") + " " + value + " — " + t("chip.refresh"),
+            "aria-label": t("field.toppedUp") + " " + value
+              + (granted === null ? "" : " " + t("field.granted") + " " + granted)
+              + " — " + t("chip.refresh"),
             onClick: () => refresh(true),
           },
           toneDot(tone),
@@ -1359,7 +1376,13 @@ window.__ModuleLoader__.load({
         "div",
         { className: "dsb_root", "data-tone": tone, title: tooltip },
         toneDot(tone),
-        react.createElement("span", { className: "dsb_label" }, busy === true && shown === null ? t("chip.busy") : t("chip.label")),
+        /* With a reading in hand the two split amounts label themselves, so the
+           generic "余额" line is only there while loading or when the read
+           failed outright. */
+        shown === null
+          ? react.createElement("span", { className: "dsb_label" }, busy === true ? t("chip.busy") : t("chip.label"))
+          : null,
+        react.createElement("span", { className: "dsb_label" }, t("field.toppedUp")),
         react.createElement("span", { className: "dsb_value" }, value),
         granted === null
           ? null

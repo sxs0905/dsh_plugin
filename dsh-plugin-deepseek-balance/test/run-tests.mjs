@@ -1143,7 +1143,8 @@ const realClearInterval = globalThis.clearInterval;
   check("dock tooltip lists every account", String(dockTree?.props?.title).includes("主账号") && String(dockTree?.props?.title).includes("备用"), dockTree?.props?.title);
   check("dock tooltip carries the failure reason", String(dockTree?.props?.title).includes("Authentication Fails"));
 
-  /* A single default account keeps the generic label and no separator. */
+  /* A single default account keeps no account name and no separator; the
+     headline amount is labelled 充值余额 instead of a generic 余额. */
   stubPayload = payloadOf([account("account-1", "", "32.30")]);
   render(dock, { t: translate, variant: "dock" });
   await settle();
@@ -1151,7 +1152,21 @@ const realClearInterval = globalThis.clearInterval;
   const singleChildren = singleTree?.children ?? [];
   check("single account renders one pill", singleChildren.filter((child) => child?.type === "span" && child?.props?.className === "dsb_pill").length === 1);
   check("single account renders no separator", singleChildren.filter((child) => child?.props?.className === "dsb_sep").length === 0);
-  check("single account uses the generic label", JSON.stringify(singleChildren).includes("[chip.label]"));
+  check("the headline amount is labelled 充值余额", JSON.stringify(singleChildren).includes("[field.toppedUp]"));
+  check("no generic 余额 label sits beside the split", !JSON.stringify(singleChildren).includes("[chip.label]"));
+
+  /* The headline is the topped-up part, never the total: 95.41 = 91.59 + 3.82. */
+  const splitBalance = { currency: "CNY", total: "95.41", granted: "3.82", toppedUp: "91.59" };
+  stubPayload = payloadOf([{ ...account("account-1", "", "95.41"), primary: splitBalance, balances: [splitBalance] }]);
+  render(dock, { t: translate, variant: "dock" });
+  await settle();
+  const splitDock = JSON.stringify(render(dock, { t: translate, variant: "dock" })?.children);
+  check("the dock headline shows 充值余额", splitDock.includes("¥91.59"), splitDock);
+  check("the dock does not show the total", !splitDock.includes("¥95.41"), splitDock);
+  render(footer, { wide: true, t: translate, variant: "footer" });
+  await settle();
+  const splitFooter = JSON.stringify(render(footer, { wide: true, t: translate, variant: "footer" })?.children);
+  check("the sidebar headline shows 充值余额", splitFooter.includes("¥91.59") && !splitFooter.includes("¥95.41"), splitFooter);
 
   /* Today's spend rides along on each account reading. */
   stubPayload = payloadOf([{ ...account("account-1", "", "32.30"), spentToday: "1.23", spentDate: "2026-09-20" }]);
