@@ -72,6 +72,10 @@ window.__ModuleLoader__.load({
          marker so it reads as a qualifier of the headline total, and clipping
          (rather than wrapping) keeps the one-row dock stable when it is tight. */
       ".dsb_grant{flex:0 1 auto;min-width:0;color:var(--dsw-alias-label-tertiary,#9a9a9a);font-variant-numeric:tabular-nums;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      /* "↑1.0.1": an update exists upstream. It only copies the command — the
+         plugin never rewrites its own profile behind the user's back. */
+      ".dsb_update{flex:none;border:0;cursor:pointer;background:transparent;color:var(--dsw-alias-brand-primary,#4d6bfe);font:inherit;font-weight:500;font-variant-numeric:tabular-nums;padding:1px 6px}",
+      ".dsb_update:hover{background:var(--dsw-alias-interactive-bg-hover);border-radius:24px}",
       ".dsb_icon{display:block}",
       ".dsb_busy .dsb_icon{animation:dsb-rotate .8s linear infinite}",
       "@keyframes dsb-rotate{to{transform:rotate(360deg)}}",
@@ -162,6 +166,8 @@ window.__ModuleLoader__.load({
       "field.key": "密钥",
       "spend.today": "今日消耗",
       "spend.note": "（按插件观测到的余额下降累计，非官方账单）",
+      "update.hint": "有新版本可用，点击复制更新命令",
+      "update.copied": "已复制",
       "accounts.more": "另有 {count} 个账户",
       "settings.title": "deepseek 账户余额",
       "settings.description": "在输入框上方统计栏与侧边栏底部显示 DeepSeek 账户余额，并按观测到的余额下降推导今日消耗。",
@@ -207,6 +213,8 @@ window.__ModuleLoader__.load({
       "field.key": "Key",
       "spend.today": "Spent today",
       "spend.note": "(accumulated from observed balance drops; not an official bill)",
+      "update.hint": "A newer build is available; click to copy the update command",
+      "update.copied": "Copied",
       "accounts.more": "{count} more account(s)",
       "settings.title": "deepseek 账户余额",
       "settings.description": "Shows the DeepSeek account balance in the composer stats strip and the sidebar footer, and derives today's spend from observed balance drops.",
@@ -302,6 +310,82 @@ window.__ModuleLoader__.load({
       const cents = Math.round(Number.parseFloat(balance.granted) * 100);
       if (!Number.isFinite(cents) || cents <= 0) return null;
       return formatAmount(balance.currency, balance.granted);
+    }
+    /**
+     * The update notice the host half carries, if any.
+     *
+     * The host half is the only side that talks to the network; here the notice
+     * is just a label plus the command that installs it, so the pill can say
+     * "↑1.0.1" without this half ever touching the profile.
+     * @param payload - the host payload.
+     * @returns `{ label, command }`, or null when there is nothing to announce.
+     */
+    function updateOf(payload) {
+      const update = payload === null || payload === undefined ? undefined : payload.update;
+      if (update === null || update === undefined || update.available !== true) return null;
+      const label = typeof update.label === "string" && update.label.length > 0 ? update.label : "?";
+      const command = typeof update.command === "string" ? update.command : "";
+      return { label, command };
+    }
+    /**
+     * The clipboard implementation of this runtime, when it has one.
+     * @param scope - optional `{ navigator }` override for tests.
+     * @returns an object with `writeText`, or null.
+     */
+    function clipboardOf(scope) {
+      const nav = scope?.navigator ?? (typeof navigator === "undefined" ? undefined : navigator);
+      const clipboard = nav === null || nav === undefined ? undefined : nav.clipboard;
+      if (clipboard === null || clipboard === undefined) return null;
+      return typeof clipboard.writeText === "function" ? clipboard : null;
+    }
+    /**
+     * Copy-to-clipboard state for the update badge.
+     * @param scope - optional `{ navigator }` override for tests.
+     * @returns `[copied, copy]`; `copied` clears itself after a moment.
+     */
+    function useCopyCommand(scope) {
+      const [copied, setCopied] = react.useState(false);
+      const timer = react.useRef(null);
+      react.useEffect(() => () => {
+        if (timer.current !== null) clearTimeout(timer.current);
+      }, []);
+      const copy = (text) => {
+        try {
+          const written = clipboardOf(scope)?.writeText(text);
+          if (written !== undefined && written !== null && typeof written.catch === "function") written.catch(() => {});
+        } catch {
+          /* A denied clipboard must not break the row. */
+        }
+        setCopied(true);
+        if (timer.current !== null) clearTimeout(timer.current);
+        timer.current = setTimeout(() => setCopied(false), 1500);
+      };
+      return [copied, copy];
+    }
+    /**
+     * The "↑1.0.1" badge: a button that copies the update command.
+     * @param payload - the host payload.
+     * @param t - the locale translator.
+     * @param copied - whether the command was just copied.
+     * @param copy - the copy callback.
+     * @returns the badge element, or null when there is nothing to announce.
+     */
+    function updateBadge(payload, t, copied, copy) {
+      const update = updateOf(payload);
+      if (update === null) return null;
+      const title = update.command.length > 0 ? t("update.hint") + " — " + update.command : t("update.hint");
+      return react.createElement(
+        "button",
+        {
+          type: "button",
+          className: "dsb_update",
+          key: "update",
+          title,
+          "aria-label": title,
+          onClick: () => copy(update.command),
+        },
+        copied === true ? t("update.copied") : "\u2191" + update.label,
+      );
     }
     /**
      * The name to show for one account: its label, else the key reference for
@@ -1253,6 +1337,7 @@ window.__ModuleLoader__.load({
     function DockBalance(props) {
       const t = typeof props.t === "function" ? props.t : (key) => key;
       const { payload, error, busy, refresh } = useBalance();
+      const [copied, copy] = useCopyCommand(props.scope);
       const [rootRef, lift, side, layout] = useDockLift();
       /* In a one-row dock the stats row already sits beside this one, so the
          lift/side machinery is out of the picture entirely. */
@@ -1303,6 +1388,8 @@ window.__ModuleLoader__.load({
           ));
         }
       }
+      const update = updateBadge(payload, t, copied, copy);
+      if (update !== null) children.push(update);
       children.push(react.createElement(
         "button",
         {
@@ -1346,6 +1433,7 @@ window.__ModuleLoader__.load({
       const shown = accounts.find((account) => account.ok === true) ?? accounts[0] ?? null;
       const extra = accounts.length > 1 ? accounts.length - 1 : 0;
       const tone = shown === null ? (error !== null ? "error" : "idle") : accountTone(shown);
+      const [copied, copy] = useCopyCommand(props.scope);
       const value = shown === null ? (error !== null ? "—" : "…") : accountValue(shown);
       const granted = grantedValueOf(shown);
       const tooltip = tooltipOf(payload, error, t);
@@ -1393,6 +1481,7 @@ window.__ModuleLoader__.load({
             "\u2193" + spentTodayOf(shown),
           ),
         extra > 0 ? react.createElement("span", { className: "dsb_label" }, "+" + String(extra)) : null,
+        updateBadge(payload, t, copied, copy),
         react.createElement(
           "button",
           {
@@ -1466,6 +1555,10 @@ window.__ModuleLoader__.load({
     exports.shouldOverlay = shouldOverlay;
     exports.measureDockLayout = measureDockLayout;
     exports.grantedValueOf = grantedValueOf;
+    exports.updateOf = updateOf;
+    exports.clipboardOf = clipboardOf;
+    exports.useCopyCommand = useCopyCommand;
+    exports.updateBadge = updateBadge;
     exports.followLift = followLift;
     exports.layoutAncestorOf = layoutAncestorOf;
     exports.apply = apply;

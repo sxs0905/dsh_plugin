@@ -320,7 +320,7 @@ process.stdout.write("host half — config\n");
   const { ctx, routes, effects, disposers } = makeCtx();
   applyPlugin(ctx, undefined);
   check("no config still registers", routes.length === 1);
-  check("applies one effect per owned resource", effects.length === 3, `got ${String(effects.length)} (route, sampler, ledger flush)`);
+  check("applies one effect per owned resource", effects.length === 4, `got ${String(effects.length)} (route, sampler, ledger flush, update check)`);
   for (const dispose of disposers) dispose();
   check("disposer removes the route", routes.length === 0, `got ${String(routes.length)}`);
 }
@@ -649,6 +649,39 @@ async function startMutableUpstream(state) {
   await upstream.close();
 }
 
+//#region host half — update check
+process.stdout.write("host half — update check\n");
+{
+  const lockFixture = [
+    "importers:",
+    "  .:",
+    "    dependencies:",
+    "      dsh-plugin-deepseek-balance:",
+    "        specifier: github:sxs0905/dsh_plugin#v1.0.0&path:/dsh-plugin-deepseek-balance",
+    "        version: https://codeload.github.com/sxs0905/dsh_plugin/tar.gz/f628bb8c7ef6e12e0b4fdac394e8faaa97fa049c#path:/dsh-plugin-deepseek-balance",
+    "",
+  ].join("\n");
+  check("exports the update helpers", ["compareVersions", "parseTagVersions", "highestVersion", "installedCommitOf", "chooseUpdate", "updateSpecOf", "proxyFromScutil"].every((key) => typeof plugin[key] === "function"));
+  check("versions compare numerically, not as text", plugin.compareVersions("1.0.10", "1.0.9") === 1 && plugin.compareVersions("1.0.9", "1.0.10") === -1 && plugin.compareVersions("1.0.0", "1.0.0") === 0);
+  {
+    const lsRemote = "aaa\trefs/tags/v1.0.0\nbbb\trefs/tags/v1.0.0^{}\nccc\trefs/tags/nightly\nddd\trefs/tags/v1.0.10\n";
+    check("only vX.Y.Z tags are collected", JSON.stringify(plugin.parseTagVersions(lsRemote)) === JSON.stringify(["1.0.0", "1.0.10"]), JSON.stringify(plugin.parseTagVersions(lsRemote)));
+    check("the highest tag wins", plugin.highestVersion(plugin.parseTagVersions(lsRemote)) === "1.0.10");
+  }
+  check("no tags means no highest", plugin.highestVersion([]) === null);
+  check("the installed commit comes out of the lockfile tarball URL", plugin.installedCommitOf(lockFixture) === "f628bb8c7ef6e12e0b4fdac394e8faaa97fa049c", String(plugin.installedCommitOf(lockFixture)));
+  check("a lockfile without this package has no commit", plugin.installedCommitOf("packages: {}\n") === null);
+  check("a newer tag is the update", JSON.stringify(plugin.chooseUpdate("1.0.0", "old-install", "1.0.1", "new-main")) === JSON.stringify({ kind: "tag", ref: "v1.0.1", version: "1.0.1", sha: null }));
+  check("the same version with a new main commit is the update", plugin.chooseUpdate("1.0.0", "old-install", "1.0.0", "new-main")?.kind === "main");
+  check("an up-to-date install announces nothing", plugin.chooseUpdate("1.0.0", "same", "1.0.0", "same") === null);
+  check("a profile that is not installed yet takes the newest tag", plugin.chooseUpdate(null, null, "1.0.0", "new-main")?.ref === "v1.0.0");
+  check("an unknown installed commit never announces the main branch", plugin.chooseUpdate("1.0.0", null, "1.0.0", "new-main") === null);
+  check("a higher installed version is not downgraded to an older tag", plugin.chooseUpdate("1.3.0", "old-install", "1.0.0", "old-install") === null);
+  check("the update spec keeps the repo subdirectory", plugin.updateSpecOf({ ref: "main" }) === "github:sxs0905/dsh_plugin#main&path:/dsh-plugin-deepseek-balance", String(plugin.updateSpecOf({ ref: "main" })));
+  check("the macOS system proxy is parsed", plugin.proxyFromScutil("  HTTPSEnable : 1\n  HTTPSProxy : 127.0.0.1\n  HTTPSPort : 7890\n") === "http://127.0.0.1:7890");
+  check("a disabled system proxy is ignored", plugin.proxyFromScutil("  HTTPSEnable : 0\n  HTTPSProxy : 127.0.0.1\n  HTTPSPort : 7890\n") === null);
+}
+
 //#region host half — settings section
 process.stdout.write("host half — settings section\n");
 const schemastery = (await import("@deepseek-ai/schemastery")).default;
@@ -656,7 +689,7 @@ check("schemastery resolves for the settings card", typeof schemastery?.object =
 {
   const schema = plugin.buildSettingsSchema(schemastery);
   const json = JSON.stringify(schema.toJSON());
-  check("settings schema carries every card field", ["apiKeyRef", "trackDailySpend", "cacheMs", "timeoutMs", "sampleMs"].every((field) => json.includes(field)), json.slice(0, 200));
+  check("settings schema carries every card field", ["apiKeyRef", "trackDailySpend", "cacheMs", "timeoutMs", "sampleMs", "checkUpdates"].every((field) => json.includes(field)), json.slice(0, 200));
   check("settings schema defaults match the host defaults", json.includes("15000") && json.includes("10000") && json.includes("300000"), json.slice(0, 400));
   const resolved = schema({ cacheMs: 1500, trackDailySpend: false });
   check(
@@ -1256,6 +1289,63 @@ const realClearInterval = globalThis.clearInterval;
   await settle();
   const noGrantTree = render(dock, { t: translate, variant: "dock" });
   check("a zero grant adds nothing to the dock row", !JSON.stringify(noGrantTree?.children).includes("dsb_grant"));
+
+  /* "↑1.0.1": the host half saw a newer build upstream. The badge only copies
+     the command — it never rewrites the profile behind the user's back. */
+  const deepFind = (node, predicate) => {
+    if (node === null || typeof node !== "object") return undefined;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const hit = deepFind(child, predicate);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    }
+    if (predicate(node)) return node;
+    return deepFind(node.children, predicate);
+  };
+  const updateCommand = "\"dsh\" plugin --profile desktop add 'github:sxs0905/dsh_plugin#v1.0.1&path:/dsh-plugin-deepseek-balance'";
+  const clipboard = [];
+  const updateScope = { navigator: { clipboard: { writeText: (text) => { clipboard.push(text); return Promise.resolve(); } } } };
+  const updatingPayload = (accounts) => ({
+    ...payloadOf(accounts),
+    update: {
+      available: true,
+      kind: "tag",
+      label: "1.0.1",
+      spec: "github:sxs0905/dsh_plugin#v1.0.1&path:/dsh-plugin-deepseek-balance",
+      command: updateCommand,
+      checkedAt: "2026-10-02T00:00:00.000Z",
+    },
+  });
+  stubPayload = updatingPayload([account("account-1", "", "32.30")]);
+  render(dock, { t: translate, variant: "dock", scope: updateScope });
+  await settle();
+  const updatingDock = render(dock, { t: translate, variant: "dock", scope: updateScope });
+  const updateBadgeNode = deepFind(updatingDock, (node) => node?.props?.className === "dsb_update");
+  check("the dock pill announces a newer version", updateBadgeNode !== undefined, JSON.stringify(updatingDock?.children));
+  check("the badge shows the arrow and the version", JSON.stringify(updateBadgeNode?.children) === JSON.stringify(["\u21911.0.1"]), JSON.stringify(updateBadgeNode?.children));
+  check(
+    "the badge carries the update command on hover",
+    String(updateBadgeNode?.props?.title).includes("[update.hint]") && String(updateBadgeNode?.props?.title).includes(updateCommand),
+    String(updateBadgeNode?.props?.title),
+  );
+  updateBadgeNode?.props?.onClick?.();
+  check("clicking the badge copies the update command", clipboard.length === 1 && clipboard[0] === updateCommand, JSON.stringify(clipboard));
+  const copiedDock = render(dock, { t: translate, variant: "dock", scope: updateScope });
+  const copiedBadge = deepFind(copiedDock, (node) => node?.props?.className === "dsb_update");
+  check("the badge confirms the copy", JSON.stringify(copiedBadge?.children) === JSON.stringify(["[update.copied]"]), JSON.stringify(copiedBadge?.children));
+  render(footer, { wide: true, t: translate, variant: "footer", scope: updateScope });
+  await settle();
+  const updatingFooter = render(footer, { wide: true, t: translate, variant: "footer", scope: updateScope });
+  check("the sidebar chip announces it too", deepFind(updatingFooter, (node) => node?.props?.className === "dsb_update") !== undefined, JSON.stringify(updatingFooter?.children));
+  /* A payload without a notice keeps the row exactly as before. */
+  stubPayload = payloadOf([account("account-1", "", "32.30")]);
+  render(dock, { t: translate, variant: "dock", scope: updateScope });
+  await settle();
+  const quietDock = render(dock, { t: translate, variant: "dock", scope: updateScope });
+  check("no badge when nothing is announced", deepFind(quietDock, (node) => node?.props?.className === "dsb_update") === undefined);
+  check("a closed notice is not an update", exportsObject.updateOf({ update: { available: false } }) === null && exportsObject.updateOf({}) === null);
 
   /* Settings -> Plugins card: keyed by the settings namespace so the tab pairs
      it with the host section, and staged so a save is the only write. */

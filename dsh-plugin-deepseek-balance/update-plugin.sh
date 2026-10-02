@@ -89,7 +89,8 @@ decide_update() {
 		printf 'tag|%s\n' "$latest_tag"
 		return 0
 	fi
-	if [ -n "$main_sha" ] && [ "$main_sha" != "$installed_commit" ]; then
+	# 没有已装提交就无从比较（本地 tarball 安装），此时只认 tag。
+	if [ -n "$main_sha" ] && [ -n "$installed_commit" ] && [ "$main_sha" != "$installed_commit" ]; then
 		printf 'main|%s\n' "$main_sha"
 		return 0
 	fi

@@ -7,14 +7,14 @@
 ```
 ① 输入框上方统计栏 —— 与「3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%」
    同一行的空侧，不换行（右侧优先，右侧不够就用左侧）：
-   3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%   ● 余额 ¥25.47 +¥2.81 ↓¥1.23 ⟳
+   3 轮 137 步 · 265 tok/s   16.4M tok · 缓存命中 99%   ● 余额 ¥25.47 +¥2.81 ↓¥1.23 ↑1.0.1 ⟳
                                                         ↑ 每个账户一个 pill：主数字是充值余额，
                                                           赠送余额以 + 号跟在后面（为 0 时不显示），
                                                           再往后是今日消耗；配色/字号/间距与
                                                           StatsPills 一致
 
 ② 侧边栏底部（始终可见；侧边栏收起成窄栏时自动变成单行金额按钮）
-   ● 余额 ¥25.47 +¥2.81  ↓¥1.23  +1  ⟳
+   ● 余额 ¥25.47 +¥2.81  ↓¥1.23  ↑1.0.1  +1  ⟳
       ↑ 绿点=正常，黄点=账户不可用，红点=读取失败；+1 表示另有账户
 
 ③ 设置 → 插件 → 插件配置（中文名 + 描述 + 可直接编辑的配置项，改完即生效）
@@ -458,6 +458,43 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 - **多币种分开记**（按 `账户|币种` 建键），不会把 CNY 和 USD 加在一起。
 - 这不是官方账单，**对账请以平台控制台为准**。
 
+## 更新
+
+插件装好后**没有自动更新**（桌面端 0.2.0 的插件页明确提示"如需升级，请卸载后重新安装"；git 安装也没有更新按钮）。本仓库提供两种方式：
+
+**1. 一行提示：pill 上的 `↑新版本`**
+
+host 半每 6 小时（`checkUpdates`，默认开）查一次远端：
+
+| 情况 | 结论 |
+|---|---|
+| 远端最高 `vX.Y.Z` tag 比已装版本新 | 提示 `↑1.0.1`（该 tag） |
+| tag 没有升级，但 `main` 提交与**已装提交**不同 | 提示 `↑main` |
+| 两边都一致 | 不显示任何提示 |
+
+比较基准来自 `pnpm-lock.yaml`：pnpm 把 git 依赖记成 codeload tarball URL，路径末尾就是解析到的提交（安装目录里没有 `.git`）。本地 tarball / `--copy` 安装没有这个提交，所以**只认 tag、不会长期显示 `↑main`**。
+
+点击这个 `↑` 只会**把更新命令复制到剪贴板**（按钮短暂变成「已复制」），**不会**自动改 profile —— 更新动作永远由你决定。命令形如：
+
+```sh
+"<应用自带 CLI>" plugin --profile <你的 profile> add 'github:sxs0905/dsh_plugin#main&path:/dsh-plugin-deepseek-balance'
+```
+
+**2. 本机脚本 `update-plugin.sh`**
+
+按同一套规则检查并**真正执行**更新（改的是 `dsh.profile.bundles` 所在 profile 的依赖记录）：
+
+```sh
+cd dsh-plugin-deepseek-balance
+./update-plugin.sh            # 检查 + 询问后更新 desktop profile
+./update-plugin.sh --check    # 只看会做什么，不改动
+./update-plugin.sh --yes      # 不询问
+```
+
+代理不用配：脚本按 `HTTPS_PROXY`/`HTTP_PROXY` → `git config http.proxy` → macOS 系统代理（`scutil --proxy`）依次探测（host 半的检查用同样的顺序）。
+
+两种方式都**必须重启 DeepSeek Harness** 才生效（host 半不热重载）。
+
 ## 配置（可选）
 
 组合包安装后，这一行由包内 `cordis.patch.yml` 提供（`node_modules` 里的副本不要去改，升级会被覆盖）。要加配置就给 profile 的 `cordis.patch.yml` 写一条**按 id 覆盖**的行：
@@ -536,6 +573,7 @@ fiber 卸载（dispose）时移除 `exit` 监听并 flush；进程退出时由 `
 | `sampleMs` | `300000` | 后台采样间隔（毫秒），让没有浏览器轮询时也能记账；设 `0` 关闭 |
 | `timeoutMs` | `10000` | 单次上游请求超时 |
 | `allowHtml` | `true` | `Accept: text/html` 时返回卡片而不是 JSON |
+| `checkUpdates` | `true` | 每 6 小时查一次 GitHub 上的新 tag / main 提交，只在 pill 上显示 `↑新版本`（详见「更新」一节）；设 `false` 完全关闭这项联网检查 |
 
 ## 为什么这样实现
 

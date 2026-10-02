@@ -26,9 +26,10 @@
  *
  * @module dsh-plugin-deepseek-balance
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /** Cordis plugin name. */
 export const name = "deepseek-balance";
@@ -62,6 +63,20 @@ const LEDGER_WRITE_INTERVAL_MS = 5_000;
 const LEDGER_FILENAME = "deepseek-balance-ledger.json";
 /** Settings namespace this plugin owns; the browser card registers under it. */
 const SETTINGS_NAMESPACE = "deepseek-balance";
+/** This package's name, as installed and as pinned in a profile lockfile. */
+const PACKAGE_NAME = "dsh-plugin-deepseek-balance";
+/** Upstream repository, and the package's directory inside it. */
+const REPO_URL = "https://github.com/sxs0905/dsh_plugin.git";
+const REPO_SLUG = "sxs0905/dsh_plugin";
+const REPO_PATH = "/dsh-plugin-deepseek-balance";
+/** Default `checkUpdates`: look for a newer release once in a while. */
+const DEFAULT_CHECK_UPDATES = true;
+/** How often the update check may hit the network again (6h). */
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** The desktop app's own CLI, which is the only one allowed to manage `desktop`. */
+const APP_CLI_PATH = "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh";
+/** Give up on a `git`/`scutil` probe after this long. */
+const PROBE_TIMEOUT_MS = 15_000;
 
 /**
  * Coerce one config number, falling back when it is absent or unusable.
@@ -140,6 +155,7 @@ function normalizeConfig(raw) {
       ? config.sampleMs
       : DEFAULT_SAMPLE_MS,
     ledgerPath: tracking === false ? null : (configuredLedger ?? join(resolveHarnessHome(), LEDGER_FILENAME)),
+    checkUpdates: config.checkUpdates === false ? false : DEFAULT_CHECK_UPDATES,
   };
 }
 
@@ -159,7 +175,126 @@ function settingsEntryOf(config) {
     cacheMs: config.cacheMs,
     timeoutMs: config.timeoutMs,
     sampleMs: config.sampleMs,
+    checkUpdates: config.checkUpdates,
   };
+}
+
+/**
+ * Compare two `x.y.z` version strings.
+ * @param a - left version.
+ * @param b - right version.
+ * @returns 1 when `a` is newer, -1 when `b` is, 0 when equal.
+ */
+export function compareVersions(a, b) {
+  const left = String(a ?? "").split(".");
+  const right = String(b ?? "").split(".");
+  for (let index = 0; index < 3; index += 1) {
+    const x = Number.parseInt(left[index] ?? "0", 10);
+    const y = Number.parseInt(right[index] ?? "0", 10);
+    const nx = Number.isFinite(x) ? x : 0;
+    const ny = Number.isFinite(y) ? y : 0;
+    if (nx !== ny) return nx > ny ? 1 : -1;
+  }
+  return 0;
+}
+
+/**
+ * Collect the `vX.Y.Z` tag names out of a `git ls-remote --tags` transcript.
+ * @param output - raw command output.
+ * @returns the version strings, without the leading `v`.
+ */
+export function parseTagVersions(output) {
+  const versions = [];
+  for (const line of String(output ?? "").split("\n")) {
+    const match = /^[0-9a-f]+\s+refs\/tags\/v([0-9]+\.[0-9]+\.[0-9]+)$/.exec(line.trim());
+    if (match !== null && versions.includes(match[1]) === false) versions.push(match[1]);
+  }
+  return versions;
+}
+
+/**
+ * The newest version in a list.
+ * @param versions - version strings.
+ * @returns the newest, or null for an empty list.
+ */
+export function highestVersion(versions) {
+  let best = null;
+  for (const version of Array.isArray(versions) ? versions : []) {
+    if (best === null || compareVersions(version, best) > 0) best = version;
+  }
+  return best;
+}
+
+/**
+ * The commit pnpm resolved for this package, read back from a profile lockfile.
+ *
+ * pnpm records git-hosted dependencies as a codeload tarball URL whose path ends
+ * in the resolved commit, which is the only place the installed revision is
+ * written down (the installed directory keeps no `.git`).
+ * @param lockText - the `pnpm-lock.yaml` contents.
+ * @returns the commit, or null when it cannot be found.
+ */
+export function installedCommitOf(lockText) {
+  if (typeof lockText !== "string" || lockText.length === 0) return null;
+  const lines = lockText.split("\n");
+  const start = lines.findIndex((line) => line.trim() === `${PACKAGE_NAME}:`);
+  const scope = start < 0 ? lockText : lines.slice(start, start + 4).join("\n");
+  const hit = /tar\.gz\/([0-9a-f]{7,40})/.exec(scope) ?? /tar\.gz\/([0-9a-f]{7,40})/.exec(lockText);
+  return hit === null ? null : hit[1];
+}
+
+/**
+ * Decide whether an update is worth announcing.
+ *
+ * The rule: a release tag newer than the installed version wins; otherwise a
+ * main-branch commit that differs from the installed one counts as an update.
+ * @param installedVersion - version of the installed copy, or null.
+ * @param installedCommit - commit of the installed copy, or null.
+ * @param latestTag - newest `vX.Y.Z` tag version on the remote, or null.
+ * @param mainSha - current `main` commit, or null.
+ * @returns `{ kind, ref, version, sha }`, or null when up to date.
+ */
+export function chooseUpdate(installedVersion, installedCommit, latestTag, mainSha) {
+  if (
+    latestTag !== null && latestTag !== undefined
+    && (installedVersion === null || installedVersion === undefined || compareVersions(latestTag, installedVersion) > 0)
+  ) {
+    return { kind: "tag", ref: `v${latestTag}`, version: latestTag, sha: null };
+  }
+  /* Without a known installed commit there is nothing to compare, and a
+     local-tarball install would otherwise be told about `main` forever. */
+  if (
+    mainSha !== null && mainSha !== undefined
+    && installedCommit !== null && installedCommit !== undefined
+    && mainSha !== installedCommit
+  ) {
+    return { kind: "main", ref: "main", version: null, sha: mainSha };
+  }
+  return null;
+}
+
+/**
+ * The dependency spec that installs a decided update.
+ * @param decision - a {@link chooseUpdate} result.
+ * @returns the `github:` spec, or null.
+ */
+export function updateSpecOf(decision) {
+  if (decision === null || decision === undefined) return null;
+  return `github:${REPO_SLUG}#${decision.ref}&path:${REPO_PATH}`;
+}
+
+/**
+ * The proxy macOS is configured to use, from a `scutil --proxy` transcript.
+ * @param output - raw `scutil --proxy` output.
+ * @returns an `http://host:port` URL, or null.
+ */
+export function proxyFromScutil(output) {
+  const text = String(output ?? "");
+  const enabled = /HTTPSEnable\s*:\s*1/.test(text);
+  const host = /HTTPSProxy\s*:\s*(\S+)/.exec(text)?.[1];
+  const port = /HTTPSPort\s*:\s*(\d+)/.exec(text)?.[1];
+  if (enabled === false || host === undefined || port === undefined) return null;
+  return `http://${host}:${port}`;
 }
 
 /**
@@ -178,6 +313,7 @@ export function buildSettingsSchema(z) {
     cacheMs: z.number().step(1).min(0).default(DEFAULT_CACHE_MS),
     timeoutMs: z.number().step(1).min(1000).default(DEFAULT_TIMEOUT_MS),
     sampleMs: z.number().step(1).min(0).default(DEFAULT_SAMPLE_MS),
+    checkUpdates: z.boolean().default(DEFAULT_CHECK_UPDATES),
   });
 }
 
@@ -577,6 +713,8 @@ export function apply(ctx, rawConfig) {
       keySource: first === undefined ? undefined : first.keySource,
       spentToday: first === undefined ? undefined : first.spentToday,
       spentDate: first === undefined ? undefined : first.spentDate,
+      /* Whether a newer build is available upstream; the pill only announces it. */
+      update: updateSnapshot,
     };
     if (succeeded.length === 0) {
       payload.error = accounts[0]?.error ?? { code: "no-accounts", message: "no accounts configured" };
@@ -656,6 +794,169 @@ export function apply(ctx, rawConfig) {
   }, "deepseek-balance: background sampler");
   restartSampler();
 
+  /* ---------------------------------------------------------------- update */
+  /**
+   * Run a short-lived probe and collect its stdout.
+   * @param command - executable name.
+   * @param args - argument vector.
+   * @param env - environment for the child.
+   * @returns the stdout text.
+   */
+  async function probe(command, args, env) {
+    return await new Promise((resolve, reject) => {
+      execFile(command, args, { env, timeout: PROBE_TIMEOUT_MS, maxBuffer: 1_000_000 }, (error, stdout) => {
+        if (error !== null && error !== undefined) reject(error);
+        else resolve(String(stdout ?? ""));
+      });
+    });
+  }
+
+  /**
+   * The environment a `git` child needs to reach GitHub from this app.
+   *
+   * The app is normally started from Finder, so it inherits no proxy variables;
+   * fall back to git's own config and then to the macOS system proxy, which is
+   * what makes the check work without the user configuring anything.
+   * @returns a copy of `process.env`, with proxy variables filled in.
+   */
+  async function gitEnv() {
+    const env = { ...process.env };
+    if (typeof env.HTTPS_PROXY === "string" && env.HTTPS_PROXY.length > 0) return env;
+    if (typeof env.https_proxy === "string" && env.https_proxy.length > 0) return env;
+    let proxy = null;
+    try {
+      proxy = (await probe("git", ["config", "--get", "http.proxy"], env)).trim();
+    } catch {
+      proxy = null;
+    }
+    if (proxy === null || proxy.length === 0) {
+      if (process.platform !== "darwin") return env;
+      try {
+        proxy = proxyFromScutil(await probe("scutil", ["--proxy"], env));
+      } catch {
+        proxy = null;
+      }
+    }
+    if (proxy !== null && proxy.length > 0) {
+      env.HTTPS_PROXY = proxy;
+      env.HTTP_PROXY = proxy;
+      env.https_proxy = proxy;
+      env.http_proxy = proxy;
+    }
+    return env;
+  }
+
+  /**
+   * The profile directory holding this installed copy.
+   *
+   * `node_modules/<package>/lib/index.js` is three levels down, but a linker may
+   * place the real files in a store, so walk up looking for the lockfile instead
+   * of assuming a fixed depth.
+   * @returns an absolute path, or null.
+   */
+  function profileDir() {
+    let dir = import.meta.dirname;
+    for (let depth = 0; depth < 8 && typeof dir === "string"; depth += 1) {
+      if (existsSync(join(dir, "pnpm-lock.yaml"))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  }
+
+  /** The version of this installed copy, or null. */
+  function ownVersion() {
+    try {
+      const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"));
+      return typeof manifest.version === "string" ? manifest.version : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The command that installs a decided update through the desktop app's CLI.
+   * @param spec - the dependency spec.
+   * @param profile - the profile directory, when known.
+   * @returns a copy-pasteable shell command.
+   */
+  function updateCommand(spec, profile) {
+    const cli = existsSync(APP_CLI_PATH) ? APP_CLI_PATH : "dsh";
+    const name = profile === null ? "desktop" : basename(profile);
+    return `"${cli}" plugin --profile ${name} add '${spec}'`;
+  }
+
+  /**
+   * Ask the remote whether a newer build exists.
+   * @returns the snapshot the payload carries.
+   */
+  async function checkForUpdate() {
+    const profile = profileDir();
+    const installedVersion = ownVersion();
+    let installedCommit = null;
+    if (profile !== null) {
+      try {
+        installedCommit = installedCommitOf(readFileSync(join(profile, "pnpm-lock.yaml"), "utf8"));
+      } catch {
+        installedCommit = null;
+      }
+    }
+    const env = await gitEnv();
+    const tags = await probe("git", ["ls-remote", "--tags", REPO_URL], env);
+    const main = await probe("git", ["ls-remote", REPO_URL, "refs/heads/main"], env);
+    const latestTag = highestVersion(parseTagVersions(tags));
+    const mainSha = /^([0-9a-f]{7,40})\s+refs\/heads\/main$/m.exec(main)?.[1] ?? null;
+    const decision = chooseUpdate(installedVersion, installedCommit, latestTag, mainSha);
+    const checkedAt = new Date().toISOString();
+    if (decision === null) return { available: false, checkedAt };
+    const spec = updateSpecOf(decision);
+    return {
+      available: true,
+      kind: decision.kind,
+      label: decision.kind === "tag" ? decision.version : "main",
+      spec,
+      command: updateCommand(spec, profile),
+      checkedAt,
+    };
+  }
+
+  /** Latest update snapshot; the route answers from it without waiting. */
+  let updateSnapshot = { available: false, checkedAt: null };
+  /** Pending interval, or null when the check is disabled. */
+  let updateTimer = null;
+
+  /** Re-run the check once, ignoring failures (offline is normal). */
+  function refreshUpdate() {
+    checkForUpdate().then((next) => {
+      updateSnapshot = next;
+    }).catch((error) => {
+      ctx.logger?.debug?.("deepseek-balance: update check failed (%s)", String(error?.message ?? error));
+    });
+  }
+
+  /** (Re)start the periodic update check for the effective `checkUpdates`. */
+  function restartUpdateCheck() {
+    if (updateTimer !== null) {
+      clearInterval(updateTimer);
+      updateTimer = null;
+    }
+    if (config.checkUpdates !== true) {
+      updateSnapshot = { available: false, checkedAt: null };
+      return;
+    }
+    refreshUpdate();
+    updateTimer = setInterval(refreshUpdate, UPDATE_CHECK_INTERVAL_MS);
+    updateTimer.unref?.();
+  }
+  ctx.effect(() => () => {
+    if (updateTimer !== null) {
+      clearInterval(updateTimer);
+      updateTimer = null;
+    }
+  }, "deepseek-balance: update check");
+  restartUpdateCheck();
+
   /**
    * Re-resolve the effective configuration after a settings commit, or after
    * the detach that restores the loader row, and rebuild whatever captured the
@@ -676,6 +977,7 @@ export function apply(ctx, rawConfig) {
     }
     if (accountsChanged || previous.ledgerPath !== config.ledgerPath) cache.clear();
     if (previous.sampleMs !== config.sampleMs) restartSampler();
+    if (previous.checkUpdates !== config.checkUpdates) restartUpdateCheck();
     ctx.logger?.info?.(
       "deepseek-balance: settings applied (cache %dms, sample %dms, ledger %s)",
       config.cacheMs,
